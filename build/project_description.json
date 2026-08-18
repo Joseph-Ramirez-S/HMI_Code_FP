@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "Lesson09",
-    "project_version":    "d03edd6-dirty",
+    "project_version":    "088e905-dirty",
     "project_path":       "E:/HMI_LVGL",
     "idf_path":           "C:/esp/v5.5.4/esp-idf",
     "build_dir":          "E:/HMI_LVGL/build",
@@ -1390,8 +1390,8 @@
             "managed_reqs": [],
             "managed_priv_reqs": [ "espressif__esp_lcd_ek79007", "espressif__esp_lcd_touch_gt911", "espressif__esp_lvgl_port", "lvgl__lvgl" ],
             "file": "E:/HMI_LVGL/build/esp-idf/main/libmain.a",
-            "sources": [ "E:/HMI_LVGL/main/main.c" ],
-            "include_dirs": [ "include" ]
+            "sources": [ "E:/HMI_LVGL/main/main.c", "E:/HMI_LVGL/main/test_background.c", "E:/HMI_LVGL/main/test_png.c", "E:/HMI_LVGL/main/test_png_2.c" ],
+            "include_dirs": [ ".", "include" ]
         },
         "mbedtls": {
             "alias": "idf::mbedtls",
@@ -3073,7 +3073,7 @@
             "priv_reqs": [ "espressif__esp_lcd_ek79007", "espressif__esp_lcd_touch_gt911", "espressif__esp_lvgl_port", "lvgl__lvgl" ],
             "managed_reqs": [],
             "managed_priv_reqs": [ "espressif__esp_lcd_ek79007", "espressif__esp_lcd_touch_gt911", "espressif__esp_lvgl_port", "lvgl__lvgl" ],
-            "include_dirs": [ "include" ]
+            "include_dirs": [ ".", "include" ]
         },
         "bsp_display": {
             "alias": "idf::bsp_display",

@@ -109,7 +109,7 @@ static esp_err_t display_port_init(void)  // Initialize LCD port (MIPI DSI + pan
 
     const esp_lcd_dpi_panel_config_t dpi_config = {  // DPI panel config
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,  // Default DPI clock source
-        .dpi_clock_freq_mhz = 55,                     // DPI clock frequency = 55 MHz
+        .dpi_clock_freq_mhz = 100,                     // DPI clock frequency = 55 MHz
         .virtual_channel = 0,                         // Virtual channel = 0
         .pixel_format = dpi_pixel_format,             // Pixel format
         .num_fbs = 1,                                 // Frame buffers = 1
@@ -159,7 +159,7 @@ static esp_err_t lvgl_init()  // Initialize LVGL
         .task_stack = 8192*2,                      /* LVGL task stack size */
         .task_affinity = 1,                       /* Task pinned to core (-1 = no affinity) */
         .task_max_sleep_ms = 10,                   /* Max sleep in LVGL task */
-        .timer_period_ms = 5,                      /* LVGL timer tick period in ms */
+        .timer_period_ms = 1,                      /* LVGL timer tick period in ms */
     };
     err = lvgl_port_init(&lvgl_cfg);  // Initialize LVGL port
     if (err != ESP_OK)
@@ -172,7 +172,7 @@ static esp_err_t lvgl_init()  // Initialize LVGL
         .panel_handle = panel_handle,            // Panel handle
         .control_handle = panel_handle,          // Control handle
         .buffer_size = (H_size * V_size * ((BITS_PER_PIXEL + 7) / 8)),  // Frame buffer size
-        .double_buffer = true,                   // Enable double buffer
+        .double_buffer = false,                   // Enable double buffer
         .hres = H_size,                          // Horizontal resolution
         .vres = V_size,                          // Vertical resolution
         .monochrome = false,                     // Not monochrome
@@ -185,7 +185,7 @@ static esp_err_t lvgl_init()  // Initialize LVGL
             .mirror_y = false,
         },
         .flags = {                               // Display flags
-            .buff_dma = false,                   // Buffer not in DMA
+            .buff_dma = true,                   // Buffer not in DMA
             .buff_spiram = true,                 // Buffer in SPIRAM
             .sw_rotate = true,                   // Enable software rotation
 #if LVGL_VERSION_MAJOR >= 9
