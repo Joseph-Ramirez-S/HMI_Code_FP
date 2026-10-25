@@ -1,8 +1,8 @@
-# Install script for directory: E:/HMI_LVGL/peripheral/bsp_extra
+# Install script for directory: E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/peripheral/bsp_extra
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
-  set(CMAKE_INSTALL_PREFIX "C:/Program Files (x86)/Lesson09")
+  set(CMAKE_INSTALL_PREFIX "C:/Program Files (x86)/HMI_Code_FP")
 endif()
 string(REGEX REPLACE "/$" "" CMAKE_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
 

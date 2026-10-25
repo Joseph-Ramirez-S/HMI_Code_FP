@@ -109,10 +109,10 @@ static esp_err_t display_port_init(void)  // Initialize LCD port (MIPI DSI + pan
 
     const esp_lcd_dpi_panel_config_t dpi_config = {  // DPI panel config
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,  // Default DPI clock source
-        .dpi_clock_freq_mhz = 100,                     // DPI clock frequency = 55 MHz
+        .dpi_clock_freq_mhz = 55,                      // 60 Hz at 1024x600 with these porches
         .virtual_channel = 0,                         // Virtual channel = 0
         .pixel_format = dpi_pixel_format,             // Pixel format
-        .num_fbs = 1,                                 // Frame buffers = 1
+        .num_fbs = 2,                                 // Double buffering prevents tearing
         .video_timing = {                             // Video timing parameters
             .h_size = H_size,                         // Horizontal size
             .v_size = V_size,                         // Vertical size

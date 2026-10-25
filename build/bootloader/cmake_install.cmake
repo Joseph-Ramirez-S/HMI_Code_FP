@@ -39,7 +39,7 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("E:/HMI_LVGL/build/bootloader/esp-idf/cmake_install.cmake")
+  include("E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/bootloader/esp-idf/cmake_install.cmake")
 endif()
 
 if(CMAKE_INSTALL_COMPONENT)
@@ -57,6 +57,6 @@ endif()
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-  file(WRITE "E:/HMI_LVGL/build/bootloader/${CMAKE_INSTALL_MANIFEST}"
+  file(WRITE "E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/bootloader/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()

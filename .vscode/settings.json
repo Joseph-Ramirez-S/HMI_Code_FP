@@ -1,6 +1,6 @@
 {
   "idf.currentSetup": "C:\\esp\\v5.5.4\\esp-idf",
-  "idf.portWin": "COM10",
+  "idf.portWin": "COM9",
   "idf.flashType": "UART",
   "idf.openOcdConfigs": [
     "board/esp32p4-builtin.cfg"
@@ -13,5 +13,6 @@
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=e:\\Tareas realizadas_cuatrimestre(SEPT-DIC 2025)\\Controlles II\\Final_Proyect\\HMI_LVGL\\build"
-  ]
+  ],
+  "idf.port": "COM10"
 }

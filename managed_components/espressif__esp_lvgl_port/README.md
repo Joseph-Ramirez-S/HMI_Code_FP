@@ -101,6 +101,7 @@ Add touch input to the LVGL. It can be called more times for adding more touch i
         .disp = disp_handle,
         .handle = tp,
     };
+    
     lv_indev_t* touch_handle = lvgl_port_add_touch(&touch_cfg);
 
     /* ... the rest of the initialization ... */

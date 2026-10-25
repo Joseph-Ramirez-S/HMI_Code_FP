@@ -6,7 +6,7 @@
 # It is included in the main 'build.ninja'.
 
 # =============================================================================
-# Project: Lesson09
+# Project: HMI_Code_FP
 # Configurations: 
 # =============================================================================
 # =============================================================================
@@ -14,7 +14,7 @@
 #############################################
 # Rule for compiling C files.
 
-rule C_COMPILER__Lesson09.2eelf_unscanned_
+rule C_COMPILER__HMI_Code_FP.2eelf_unscanned_
   depfile = $DEP_FILE
   deps = gcc
   command = ${LAUNCHER}${CODE_CHECK}C:\Espressif\tools\riscv32-esp-elf\esp-14.2.0_20260121\riscv32-esp-elf\bin\riscv32-esp-elf-gcc.exe $DEFINES $INCLUDES $FLAGS -MD -MT $out -MF $DEP_FILE -o $out -c $in
@@ -24,7 +24,7 @@ rule C_COMPILER__Lesson09.2eelf_unscanned_
 #############################################
 # Rule for linking CXX executable.
 
-rule CXX_EXECUTABLE_LINKER__Lesson09.2eelf_
+rule CXX_EXECUTABLE_LINKER__HMI_Code_FP.2eelf_
   command = C:\Windows\system32\cmd.exe /C "$PRE_LINK && C:\Espressif\tools\riscv32-esp-elf\esp-14.2.0_20260121\riscv32-esp-elf\bin\riscv32-esp-elf-g++.exe $FLAGS $LINK_FLAGS @$RSP_FILE -o $TARGET_FILE && $POST_BUILD"
   description = Linking CXX executable $TARGET_FILE
   rspfile = $RSP_FILE
@@ -2063,6 +2063,16 @@ rule C_COMPILER____idf_main_unscanned_
 
 
 #############################################
+# Rule for compiling CXX files.
+
+rule CXX_COMPILER____idf_main_unscanned_
+  depfile = $DEP_FILE
+  deps = gcc
+  command = ${LAUNCHER}${CODE_CHECK}C:\Espressif\tools\riscv32-esp-elf\esp-14.2.0_20260121\riscv32-esp-elf\bin\riscv32-esp-elf-g++.exe $DEFINES $INCLUDES $FLAGS -MD -MT $out -MF $DEP_FILE -o $out -c $in
+  description = Building CXX object $out
+
+
+#############################################
 # Rule for linking C static library.
 
 rule C_STATIC_LIBRARY_LINKER____idf_main_
@@ -2075,7 +2085,7 @@ rule C_STATIC_LIBRARY_LINKER____idf_main_
 # Rule for re-running cmake.
 
 rule RERUN_CMAKE
-  command = C:\Espressif\tools\cmake\3.30.2\bin\cmake.exe --regenerate-during-build -SE:\HMI_LVGL -BE:\HMI_LVGL\build
+  command = C:\Espressif\tools\cmake\3.30.2\bin\cmake.exe --regenerate-during-build -SE:\Tareas_realizadas_cuatrimestre_SEPT-DIC-2025\Controlles_II\Final_Proyect\HMI_Code_FP -BE:\Tareas_realizadas_cuatrimestre_SEPT-DIC-2025\Controlles_II\Final_Proyect\HMI_Code_FP\build
   description = Re-running CMake...
   generator = 1
 

@@ -13,8 +13,8 @@ end
 
 # Load bootloader symbols
 set confirm off
-    add-symbol-file E:/HMI_LVGL/build/bootloader/bootloader.elf
+    add-symbol-file E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/bootloader/bootloader.elf
 set confirm on
 
 # Load application symbols
-file E:/HMI_LVGL/build/Lesson09.elf
+file E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/HMI_Code_FP.elf

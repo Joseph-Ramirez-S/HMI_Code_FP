@@ -56,7 +56,7 @@ static char *TAG = "test";
 
 /* LCD IO and panel */
 static esp_lcd_panel_io_handle_t lcd_io = NULL;
-esp_lcd_panel_handle_t lcd_panel = NULL;
+static esp_lcd_panel_handle_t lcd_panel = NULL;
 static esp_lcd_panel_io_handle_t tp_io_handle = NULL;
 static esp_lcd_touch_handle_t touch_handle = NULL;
 

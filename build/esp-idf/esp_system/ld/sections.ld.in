@@ -421,6 +421,16 @@ SECTIONS
     arrays[rodata_noload]
     mapping[rodata_noload]
   } > rodata_seg_low
+  /* This section holds .ext_ram.bss data, and will be put in PSRAM */
+  .ext_ram.bss (NOLOAD) :
+  {
+    _ext_ram_bss_start = ABSOLUTE(.);
+    arrays[extern_ram]
+    mapping[extern_ram]
+    
+ . = ALIGN(4); 
+ _ext_ram_bss_end = ABSOLUTE(.);
+  } > ext_ram_seg
   .dram0.bss (NOLOAD) :
   {
     

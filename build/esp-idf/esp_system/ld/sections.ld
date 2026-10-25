@@ -1,6 +1,6 @@
 /* Automatically generated file; DO NOT EDIT */
 /* Espressif IoT Development Framework Linker Script */
-/* Generated from: E:\HMI_LVGL\build\esp-idf\esp_system\ld\sections.ld.in */
+/* Generated from: E:\Tareas_realizadas_cuatrimestre_SEPT-DIC-2025\Controlles_II\Final_Proyect\HMI_Code_FP\build\esp-idf\esp_system\ld\sections.ld.in */
 
 /*
  * SPDX-FileCopyrightText: 2022 Espressif Systems (Shanghai) CO LTD
@@ -935,6 +935,15 @@ SECTIONS
      */
     _rodata_reserved_end = .;
   } > rodata_seg_low
+  /* This section holds .ext_ram.bss data, and will be put in PSRAM */
+  .ext_ram.bss (NOLOAD) :
+  {
+    _ext_ram_bss_start = ABSOLUTE(.);
+    *(.ext_ram.bss .ext_ram.bss.*)
+    
+ . = ALIGN(4); 
+ _ext_ram_bss_end = ABSOLUTE(.);
+  } > ext_ram_seg
   .dram0.bss (NOLOAD) :
   {
     
@@ -946,7 +955,6 @@ SECTIONS
      */
     *(.bss .bss.*)
     *(.dynbss .dynsbss .gnu.linkonce.b .gnu.linkonce.b.* .gnu.linkonce.sb .gnu.linkonce.sb.* .gnu.linkonce.sb2 .gnu.linkonce.sb2.* .sbss .sbss.* .sbss2 .sbss2.* .scommon .share.mem)
-    *(.ext_ram.bss .ext_ram.bss.*)
     *(COMMON)
     
  . = ALIGN(4); 
@@ -963,7 +971,6 @@ SECTIONS
      */
     *(.bss .bss.*)
     *(.dynbss .dynsbss .gnu.linkonce.b .gnu.linkonce.b.* .gnu.linkonce.sb .gnu.linkonce.sb.* .gnu.linkonce.sb2 .gnu.linkonce.sb2.* .sbss .sbss.* .sbss2 .sbss2.* .scommon .share.mem)
-    *(.ext_ram.bss .ext_ram.bss.*)
     *(COMMON)
     
  . = ALIGN(4); 

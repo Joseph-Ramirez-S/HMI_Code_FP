@@ -1,4 +1,4 @@
-/* * Data converted from E:/HMI_LVGL/build/esp-idf/mbedtls/x509_crt_bundle
+/* * Data converted from E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/esp-idf/mbedtls/x509_crt_bundle
  */
 .data
 #if !defined (__APPLE__) && !defined (__linux__)
