@@ -1,2 +1,2 @@
 --flash_mode dio --flash_freq 80m --flash_size 16MB
-0x210000 $<TARGET_PROPERTY:__idf_build_target,EXECUTABLE_NAME>.bin
+0x390000 $<TARGET_PROPERTY:__idf_build_target,EXECUTABLE_NAME>.bin

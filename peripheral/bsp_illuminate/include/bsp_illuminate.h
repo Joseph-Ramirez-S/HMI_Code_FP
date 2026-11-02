@@ -21,8 +21,6 @@
 #define ILLUMINATE_DEBUG(fmt, ...) ESP_LOGD(ILLUMINATE_TAG, fmt, ##__VA_ARGS__)
 #define ILLUMINATE_ERROR(fmt, ...) ESP_LOGE(ILLUMINATE_TAG, fmt, ##__VA_ARGS__)
 
-#define V_size 600              // Vertical resolution
-#define H_size 1024             // Horizontal resolution
 #define BITS_PER_PIXEL 16       // Number of image display bits of the display screen
 
 #define LCD_GPIO_BLIGHT 31      // LCD Blight GPIO

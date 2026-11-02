@@ -3,9 +3,8 @@
 #include "esp_lcd_panel_ops.h" 
 #include "esp_heap_caps.h"     
 #include "esp_spiffs.h"
-#include <limits.h>
 #include <stdbool.h>
-#include <stdio.h> // Obligatorio para leer el archivo con fopen()
+#include <stdint.h>
 
 // --- PROTECCIÓN PARA LA MEMORIA RAM (STB_IMAGE EN PSRAM) ---
 #define STBI_NO_SIMD
@@ -14,7 +13,9 @@
 #define STBI_REALLOC(p,newsz)     heap_caps_realloc(p, newsz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define STBI_FREE(p)              heap_caps_free(p)
 #define STB_IMAGE_IMPLEMENTATION
-#define FRAME_SPEED_TRANSITION 2
+#define FRAME_SPEED_TRANSITION 3
+#define RECEPTIONIST_FRAME_COLUMNS 12
+#define RECEPTIONIST_FRAME_ROWS 2
 #include "stb_image.h"
 
 // 1. Incluimos nuestro intermediario
@@ -32,8 +33,12 @@ static uint16_t* receptionist_pixels = NULL;
 static uint16_t* neko_pixels = NULL;
 static uint16_t* elevator_door_pixels = NULL;
 static uint16_t* level_indicator_pixels = NULL;
+static uint16_t* agent_shadow_pixels = NULL;
+static uint16_t* elevator_inside_pixels = NULL;
+static uint16_t* elevator_inside_door_pixels = NULL;
+static bool touch_available = false;
 static const int neko_frame_delay_render_frames = FRAME_SPEED_TRANSITION;
-static const int elevator_door_frame_delay_render_frames = FRAME_SPEED_TRANSITION;
+static const int elevator_door_frame_delay_render_frames = FRAME_SPEED_TRANSITION - 1;
 
 // ---------------------------------------------------------
 // 1. SISTEMA DE ARCHIVOS (LittleFS / SPIFFS)
@@ -58,87 +63,77 @@ esp_err_t init_spiffs(void) {
 // 2. FUNCIÓN DE CARGA SEGURA PARA EL ESP32
 // ---------------------------------------------------------
 bool load_png_to_rgb565_esp32(const char* filepath, SpriteID sprite_id) {
-    FILE* f = fopen(filepath, "rb");
-    if (!f) {
-        MAIN_ERROR("No se pudo abrir el archivo: %s", filepath);
-        return false;
-    }
-
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    if (fsize <= 0) {
-        MAIN_ERROR("El archivo esta vacio o corrupto");
-        fclose(f);
-        return false;
-    }
-
-    if (fsize > INT_MAX) {
-        MAIN_ERROR("El archivo es demasiado grande para decodificarlo");
-        fclose(f);
-        return false;
-    }
-
-    uint8_t* raw_buffer = (uint8_t*)heap_caps_malloc(
-        fsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!raw_buffer) {
-        MAIN_ERROR("No hay memoria PSRAM para leer la imagen");
-        fclose(f);
-        return false;
-    }
-
-    size_t read_bytes = fread(raw_buffer, 1, fsize, f);
-    fclose(f);
-
-    if (read_bytes != fsize) {
-        MAIN_ERROR("Error de lectura de archivo.");
-        heap_caps_free(raw_buffer);
-        return false;
-    }
-
     int w, h, channels;
-    unsigned char* raw = stbi_load_from_memory(raw_buffer, fsize, &w, &h, &channels, 4);
-    heap_caps_free(raw_buffer); // Liberamos el archivo crudo de inmediato
-
-    if (raw) {
-        uint16_t* pixels = (uint16_t*)heap_caps_malloc(
-            (size_t)w * h * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!pixels) {
-            MAIN_ERROR("No hay memoria PSRAM para los pixeles RGB565");
-            stbi_image_free(raw);
-            return false;
-        }
-
-        for (int i = 0; i < w * h; i++) {
-            uint8_t r = raw[i * 4 + 0] >> 3;
-            uint8_t g = raw[i * 4 + 1] >> 2;
-            uint8_t b = raw[i * 4 + 2] >> 3;
-            uint8_t a = raw[i * 4 + 3];
-            
-            if (a == 0) pixels[i] = 0xF81F;
-            else pixels[i] = (r << 11) | (g << 5) | b;
-        }
-        stbi_image_free(raw);
-        MAIN_INFO("Imagen decodificada con exito (%dx%d)", w, h);
-
-        if (sprite_id == SPRITE_BACKGROUND) {
-            background_pixels = pixels;
-        } else if (sprite_id == SPRITE_RECEPTIONIST) {
-            receptionist_pixels = pixels;
-        } else if (sprite_id == SPRITE_NEKO) {
-            neko_pixels = pixels;
-        } else if (sprite_id == SPRITE_ELEVATOR_DOOR) {
-            elevator_door_pixels = pixels;
-        } else if (sprite_id == SPRITE_LEVEL_INDICATOR) {
-            level_indicator_pixels = pixels;
-        }
-        bridge_set_sprite(sprite_id, pixels, w, h);
-        return true;
-    } else {
-        MAIN_ERROR("Fallo al decodificar el PNG: %s", stbi_failure_reason());
+    unsigned char* raw = stbi_load(filepath, &w, &h, &channels, 4);
+    if (raw == NULL) {
+        MAIN_ERROR("Fallo al decodificar %s: %s", filepath, stbi_failure_reason());
         return false;
     }
+
+    if (w <= 0 || h <= 0 ||
+        (size_t)w > SIZE_MAX / (size_t)h / 4) {
+        MAIN_ERROR("Dimensiones de imagen invalidas: %s", filepath);
+        stbi_image_free(raw);
+        return false;
+    }
+    if (sprite_id == SPRITE_RECEPTIONIST &&
+        (w % RECEPTIONIST_FRAME_COLUMNS != 0 ||
+         h % RECEPTIONIST_FRAME_ROWS != 0)) {
+        MAIN_ERROR("La hoja de la recepcionista debe tener 12 columnas y 2 filas: %s",
+                   filepath);
+        stbi_image_free(raw);
+        return false;
+    }
+    if (sprite_id == SPRITE_AGENT_SHADOW && (w % 8 != 0 || h <= 0)) {
+        MAIN_ERROR("La hoja del agente sombra debe tener 8 columnas: %s", filepath);
+        stbi_image_free(raw);
+        return false;
+    }
+    if (sprite_id == SPRITE_ELEVATOR_INSIDE_DOOR && (w < 8 || h <= 0)) {
+        MAIN_ERROR("La hoja de la puerta interior no contiene 8 cuadros: %s", filepath);
+        stbi_image_free(raw);
+        return false;
+    }
+
+    const size_t pixel_count = (size_t)w * (size_t)h;
+    uint16_t* pixels = (uint16_t*)raw;
+    for (size_t i = 0; i < pixel_count; ++i) {
+        const uint8_t r = raw[i * 4 + 0] >> 3;
+        const uint8_t g = raw[i * 4 + 1] >> 2;
+        const uint8_t b = raw[i * 4 + 2] >> 3;
+        const uint8_t a = raw[i * 4 + 3];
+        pixels[i] = a == 0 ? 0xF81F : (uint16_t)((r << 11) | (g << 5) | b);
+    }
+
+    uint16_t* compact_pixels = (uint16_t*)heap_caps_realloc(
+        pixels, pixel_count * sizeof(*pixels), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (compact_pixels == NULL) {
+        MAIN_ERROR("No se pudo compactar la imagen %s; se conserva el buffer original",
+                   filepath);
+    } else {
+        pixels = compact_pixels;
+    }
+
+    MAIN_INFO("Imagen decodificada con exito: %s (%dx%d)", filepath, w, h);
+    if (sprite_id == SPRITE_BACKGROUND) {
+        background_pixels = pixels;
+    } else if (sprite_id == SPRITE_RECEPTIONIST) {
+        receptionist_pixels = pixels;
+    } else if (sprite_id == SPRITE_NEKO) {
+        neko_pixels = pixels;
+    } else if (sprite_id == SPRITE_ELEVATOR_DOOR) {
+        elevator_door_pixels = pixels;
+    } else if (sprite_id == SPRITE_LEVEL_INDICATOR) {
+        level_indicator_pixels = pixels;
+    } else if (sprite_id == SPRITE_AGENT_SHADOW) {
+        agent_shadow_pixels = pixels;
+    } else if (sprite_id == SPRITE_ELEVATOR_INSIDE_BACKGROUND) {
+        elevator_inside_pixels = pixels;
+    } else if (sprite_id == SPRITE_ELEVATOR_INSIDE_DOOR) {
+        elevator_inside_door_pixels = pixels;
+    }
+    bridge_set_sprite(sprite_id, pixels, w, h);
+    return true;
 }
 // ---------------------------------------------------------
 // 3. MOTOR GRÁFICO UNIVERSAL (Enlazado al Bridge)
@@ -153,17 +148,43 @@ static void animation_game_task(void *pvParameters) {
     if (!load_png_to_rgb565_esp32(
             "/storage/la_que_atiende_strip4.png", SPRITE_RECEPTIONIST)) {
         MAIN_ERROR("No se pudo cargar la animacion de la recepcionista");
+        vTaskDelete(NULL);
+        return;
     }
     if (!load_png_to_rgb565_esp32("/storage/neko_strip6.png", SPRITE_NEKO)) {
         MAIN_ERROR("No se pudo cargar la animacion de Neko");
+        vTaskDelete(NULL);
+        return;
     }
     if (!load_png_to_rgb565_esp32(
-            "/storage/elevator door_strip8.png", SPRITE_ELEVATOR_DOOR)) {
+            "/storage/elevator_door_strip8.png", SPRITE_ELEVATOR_DOOR)) {
         MAIN_ERROR("No se pudo cargar la animacion de las puertas del ascensor");
+        vTaskDelete(NULL);
+        return;
     }
     if (!load_png_to_rgb565_esp32(
             "/storage/Level_indicator.png", SPRITE_LEVEL_INDICATOR)) {
         MAIN_ERROR("No se pudo cargar la animacion del indicador de nivel");
+        vTaskDelete(NULL);
+        return;
+    }
+    if (!load_png_to_rgb565_esp32(
+            "/storage/agente.png", SPRITE_AGENT_SHADOW)) {
+        MAIN_ERROR("No se pudo cargar la animacion del agente sombra");
+        vTaskDelete(NULL);
+        return;
+    }
+    if (!load_png_to_rgb565_esp32(
+            "/storage/elevator_inside.png", SPRITE_ELEVATOR_INSIDE_BACKGROUND)) {
+        MAIN_ERROR("No se pudo cargar el interior del ascensor");
+        vTaskDelete(NULL);
+        return;
+    }
+    if (!load_png_to_rgb565_esp32(
+            "/storage/inside_door.png", SPRITE_ELEVATOR_INSIDE_DOOR)) {
+        MAIN_ERROR("No se pudo cargar la puerta del interior del ascensor");
+        vTaskDelete(NULL);
+        return;
     }
 
     void *framebuffers[2] = { NULL, NULL };
@@ -180,6 +201,7 @@ static void animation_game_task(void *pvParameters) {
     TickType_t last_wake = xTaskGetTickCount();
     uint32_t frame_tick_remainder = 0;
     uint32_t frames_in_window = 0;
+    uint32_t frames_rendered_in_window = 0;
     uint32_t frame_deadline_misses = 0;
     uint64_t frame_work_time_us = 0;
     uint32_t max_frame_work_us = 0;
@@ -193,21 +215,24 @@ static void animation_game_task(void *pvParameters) {
             return;
         }
         uint16_t *framebuffer = (uint16_t *)framebuffers[back_buffer_index];
-        if (!bridge_render_frame(framebuffer, 1024, 600)) {
+        if (!bridge_render_frame(framebuffer, H_size, V_size)) {
             MAIN_ERROR("No se pudo componer el cuadro de animacion");
             vTaskDelete(NULL);
             return;
         }
 
-        err = esp_lcd_panel_draw_bitmap(
-            panel_handle, 0, 0, 1024, 600, framebuffer);
-        if (err != ESP_OK) {
-            MAIN_ERROR("Error transmitiendo cuadro al LCD: %s",
-                       esp_err_to_name(err));
-            vTaskDelete(NULL);
-            return;
+        if (bridge_frame_was_rendered()) {
+            ++frames_rendered_in_window;
+            err = esp_lcd_panel_draw_bitmap(
+                panel_handle, 0, 0, H_size, V_size, framebuffer);
+            if (err != ESP_OK) {
+                MAIN_ERROR("Error transmitiendo cuadro al LCD: %s",
+                           esp_err_to_name(err));
+                vTaskDelete(NULL);
+                return;
+            }
+            back_buffer_index ^= 1;
         }
-        back_buffer_index ^= 1;
 
         const int64_t frame_end_us = esp_timer_get_time();
         const uint32_t frame_work_us = (uint32_t)(frame_end_us - frame_start_us);
@@ -229,11 +254,14 @@ static void animation_game_task(void *pvParameters) {
                 (uint32_t)((uint64_t)frames_in_window * 10000000ULL / elapsed_us);
             const uint32_t average_work_us =
                 (uint32_t)(frame_work_time_us / frames_in_window);
-            MAIN_INFO("Video: %u.%u FPS, trabajo promedio/maximo: %u/%u us, "
+            MAIN_INFO("Video: %u.%u FPS, composiciones: %u, "
+                      "trabajo promedio/maximo: %u/%u us, "
                       "plazos perdidos: %u",
-                      fps_tenths / 10, fps_tenths % 10, average_work_us,
+                      fps_tenths / 10, fps_tenths % 10,
+                      frames_rendered_in_window, average_work_us,
                       max_frame_work_us, frame_deadline_misses);
             frames_in_window = 0;
+            frames_rendered_in_window = 0;
             frame_deadline_misses = 0;
             frame_work_time_us = 0;
             max_frame_work_us = 0;
@@ -285,6 +313,8 @@ static void system_init(void) {
     err = touch_init(); 
     if (err != ESP_OK) {
         MAIN_ERROR("El chip tactil no respondio, ignorando...");
+    } else {
+        touch_available = true;
     }
 
     MAIN_INFO("Initializing LCD MIPI-DSI...");
@@ -306,15 +336,34 @@ void app_main(void)
     esp_err_t err = init_spiffs();
     if (err != ESP_OK) init_fail_handler("SPIFFS", err);
     bridge_init();
-    bridge_set_receptionist_frame_delay(FRAME_SPEED_TRANSITION + 2);
+    bridge_set_receptionist_frame_delay(FRAME_SPEED_TRANSITION - 1);
     bridge_set_neko_frame_delay(neko_frame_delay_render_frames);
     bridge_set_elevator_door_frame_delay(elevator_door_frame_delay_render_frames);
-    bridge_set_level_indicator_frame_delay(FRAME_SPEED_TRANSITION + 7);
+    bridge_set_level_indicator_frame_delay(FRAME_SPEED_TRANSITION + 10);
+    bridge_set_agent_shadow_frame_delay(FRAME_SPEED_TRANSITION + 2);
 
     // Lanzamos directamente la tarea gráfica, ella hará la carga de memoria pesada
     xTaskCreatePinnedToCore(animation_game_task, "Animacion_DSI", 65536, NULL, 5, NULL, 1);
 
+    bool touch_was_pressed = false;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (touch_available) {
+            if (touch_read() != ESP_OK) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+
+            uint16_t touch_x = 0xffff;
+            uint16_t touch_y = 0xffff;
+            bool touch_pressed = false;
+            get_coor(&touch_x, &touch_y, &touch_pressed);
+            if (touch_pressed && !touch_was_pressed) {
+                bridge_touch_elevator_door(touch_x, touch_y, H_size, V_size);
+            }
+            touch_was_pressed = touch_pressed;
+            vTaskDelay(pdMS_TO_TICKS(20));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
     }
 }
