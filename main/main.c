@@ -13,9 +13,12 @@
 #define STBI_REALLOC(p,newsz)     heap_caps_realloc(p, newsz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define STBI_FREE(p)              heap_caps_free(p)
 #define STB_IMAGE_IMPLEMENTATION
-#define FRAME_SPEED_TRANSITION 3
+#define FRAME_SPEED_TRANSITION 4
+#define ANIMATION_FRAME_RATE_HZ 60U
+#define FRAME_STATS_INTERVAL_US 5000000LL
 #define RECEPTIONIST_FRAME_COLUMNS 12
 #define RECEPTIONIST_FRAME_ROWS 2
+#define ANIMATION_TASK_STACK_SIZE 16384U
 #include "stb_image.h"
 
 // 1. Incluimos nuestro intermediario
@@ -36,9 +39,10 @@ static uint16_t* level_indicator_pixels = NULL;
 static uint16_t* agent_shadow_pixels = NULL;
 static uint16_t* elevator_inside_pixels = NULL;
 static uint16_t* elevator_inside_door_pixels = NULL;
+static uint16_t* elevator_panel_pixels = NULL;
+static uint16_t* elevator_buttons_pixels = NULL;
+static uint16_t* elevator_lights_pixels = NULL;
 static bool touch_available = false;
-static const int neko_frame_delay_render_frames = FRAME_SPEED_TRANSITION;
-static const int elevator_door_frame_delay_render_frames = FRAME_SPEED_TRANSITION - 1;
 
 // ---------------------------------------------------------
 // 1. SISTEMA DE ARCHIVOS (LittleFS / SPIFFS)
@@ -131,6 +135,12 @@ bool load_png_to_rgb565_esp32(const char* filepath, SpriteID sprite_id) {
         elevator_inside_pixels = pixels;
     } else if (sprite_id == SPRITE_ELEVATOR_INSIDE_DOOR) {
         elevator_inside_door_pixels = pixels;
+    } else if (sprite_id == SPRITE_ELEVATOR_PANEL) {
+        elevator_panel_pixels = pixels;
+    } else if (sprite_id == SPRITE_ELEVATOR_BUTTONS) {
+        elevator_buttons_pixels = pixels;
+    } else if (sprite_id == SPRITE_ELEVATOR_LIGHTS) {
+        elevator_lights_pixels = pixels;
     }
     bridge_set_sprite(sprite_id, pixels, w, h);
     return true;
@@ -177,6 +187,24 @@ static void animation_game_task(void *pvParameters) {
     if (!load_png_to_rgb565_esp32(
             "/storage/elevator_inside.png", SPRITE_ELEVATOR_INSIDE_BACKGROUND)) {
         MAIN_ERROR("No se pudo cargar el interior del ascensor");
+        vTaskDelete(NULL);
+        return;
+    }
+    if (!load_png_to_rgb565_esp32(
+            "/storage/Panel_pixelado.png", SPRITE_ELEVATOR_PANEL)) {
+        MAIN_ERROR("No se pudo cargar el panel del ascensor");
+        vTaskDelete(NULL);
+        return;
+    }
+    if (!load_png_to_rgb565_esp32(
+            "/storage/botones_ascensor.png", SPRITE_ELEVATOR_BUTTONS)) {
+        MAIN_ERROR("No se pudieron cargar los botones del ascensor");
+        vTaskDelete(NULL);
+        return;
+    }
+    if (!load_png_to_rgb565_esp32(
+            "/storage/luces_ascensor.png", SPRITE_ELEVATOR_LIGHTS)) {
+        MAIN_ERROR("No se pudieron cargar las luces del ascensor");
         vTaskDelete(NULL);
         return;
     }
@@ -240,7 +268,7 @@ static void animation_game_task(void *pvParameters) {
         if (frame_work_us > max_frame_work_us) {
             max_frame_work_us = frame_work_us;
         }
-        const uint32_t frame_budget_us = 1000000 / 60;
+        const uint32_t frame_budget_us = 1000000 / ANIMATION_FRAME_RATE_HZ;
         const uint32_t tick_period_us = 1000000 / configTICK_RATE_HZ;
         const bool frame_missed_deadline =
             frame_work_us >= frame_budget_us - tick_period_us;
@@ -248,7 +276,7 @@ static void animation_game_task(void *pvParameters) {
             ++frame_deadline_misses;
         }
         ++frames_in_window;
-        if (frame_end_us - window_start_us >= 1000000) {
+        if (frame_end_us - window_start_us >= FRAME_STATS_INTERVAL_US) {
             const uint64_t elapsed_us = frame_end_us - window_start_us;
             const uint32_t fps_tenths =
                 (uint32_t)((uint64_t)frames_in_window * 10000000ULL / elapsed_us);
@@ -268,18 +296,16 @@ static void animation_game_task(void *pvParameters) {
             window_start_us = frame_end_us;
         }
 
-        if (frame_missed_deadline) {
-            vTaskDelay(1);
+        frame_tick_remainder += configTICK_RATE_HZ % ANIMATION_FRAME_RATE_HZ;
+        TickType_t frame_ticks = configTICK_RATE_HZ / ANIMATION_FRAME_RATE_HZ;
+        if (frame_tick_remainder >= ANIMATION_FRAME_RATE_HZ) {
+            ++frame_ticks;
+            frame_tick_remainder -= ANIMATION_FRAME_RATE_HZ;
+        }
+        vTaskDelayUntil(&last_wake, frame_ticks);
+        if (frame_work_us >= frame_budget_us) {
             last_wake = xTaskGetTickCount();
             frame_tick_remainder = 0;
-        } else {
-            frame_tick_remainder += configTICK_RATE_HZ % 60;
-            TickType_t frame_ticks = configTICK_RATE_HZ / 60;
-            if (frame_tick_remainder >= 60) {
-                ++frame_ticks;
-                frame_tick_remainder -= 60;
-            }
-            vTaskDelayUntil(&last_wake, frame_ticks);
         }
     }
 }
@@ -331,25 +357,28 @@ static void system_init(void) {
 void app_main(void)
 {
     MAIN_INFO("Iniciando Arquitectura Unificada (Bridge PC-ESP32)...");
-    
     system_init();
     esp_err_t err = init_spiffs();
     if (err != ESP_OK) init_fail_handler("SPIFFS", err);
     bridge_init();
-    bridge_set_receptionist_frame_delay(FRAME_SPEED_TRANSITION - 1);
-    bridge_set_neko_frame_delay(neko_frame_delay_render_frames);
-    bridge_set_elevator_door_frame_delay(elevator_door_frame_delay_render_frames);
-    bridge_set_level_indicator_frame_delay(FRAME_SPEED_TRANSITION + 10);
-    bridge_set_agent_shadow_frame_delay(FRAME_SPEED_TRANSITION + 2);
+    bridge_set_receptionist_frame_delay(FRAME_SPEED_TRANSITION + 2);
+    bridge_set_neko_frame_delay(FRAME_SPEED_TRANSITION);
+    bridge_set_elevator_door_frame_delay(FRAME_SPEED_TRANSITION - 1);
+    bridge_set_level_indicator_frame_delay(FRAME_SPEED_TRANSITION + 7);
+    bridge_set_agent_shadow_frame_delay(FRAME_SPEED_TRANSITION);
 
     // Lanzamos directamente la tarea gráfica, ella hará la carga de memoria pesada
-    xTaskCreatePinnedToCore(animation_game_task, "Animacion_DSI", 65536, NULL, 5, NULL, 1);
+    if (xTaskCreatePinnedToCore(animation_game_task, "Animacion_DSI",
+                                ANIMATION_TASK_STACK_SIZE, NULL, 5, NULL, 1) != pdPASS) {
+        init_fail_handler("tarea grafica", ESP_ERR_NO_MEM);
+    }
 
     bool touch_was_pressed = false;
+    uint8_t touch_release_samples = 0;
     for (;;) {
         if (touch_available) {
             if (touch_read() != ESP_OK) {
-                vTaskDelay(pdMS_TO_TICKS(20));
+                vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
             }
 
@@ -357,11 +386,24 @@ void app_main(void)
             uint16_t touch_y = 0xffff;
             bool touch_pressed = false;
             get_coor(&touch_x, &touch_y, &touch_pressed);
-            if (touch_pressed && !touch_was_pressed) {
-                bridge_touch_elevator_door(touch_x, touch_y, H_size, V_size);
+            if (touch_pressed) {
+                touch_release_samples = 0;
+                bridge_touch_elevator_panel(
+                    touch_x, touch_y, true, H_size, V_size);
+                if (!touch_was_pressed) {
+                    bridge_touch_elevator_door(
+                        touch_x, touch_y, H_size, V_size);
+                }
+                touch_was_pressed = true;
+            } else if (touch_was_pressed) {
+                if (++touch_release_samples >= 2) {
+                    bridge_touch_elevator_panel(
+                        touch_x, touch_y, false, H_size, V_size);
+                    touch_was_pressed = false;
+                    touch_release_samples = 0;
+                }
             }
-            touch_was_pressed = touch_pressed;
-            vTaskDelay(pdMS_TO_TICKS(20));
+            vTaskDelay(pdMS_TO_TICKS(10));
         } else {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }

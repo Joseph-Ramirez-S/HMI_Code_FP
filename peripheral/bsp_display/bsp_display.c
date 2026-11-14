@@ -109,11 +109,10 @@ esp_err_t touch_read(void)
         return err;
     }
 
-    vTaskDelay(10 / portTICK_PERIOD_MS); // Small delay for stability
-
     // Get touch coordinates
     if (esp_lcd_touch_get_coordinates(tp, touch_x, touch_y, touch_strength, &touch_cnt, 1)) {
-        DISPLAY_INFO("X=%hu Y=%hu strenth=%hu cnt=%d", touch_x[0], touch_y[0], touch_strength[0], touch_cnt);
+        DISPLAY_DEBUG("X=%hu Y=%hu strength=%hu cnt=%d",
+                      touch_x[0], touch_y[0], touch_strength[0], touch_cnt);
         set_coor(touch_x[0], touch_y[0], true); // Update coordinates and press state
     }
     else {

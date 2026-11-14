@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "HMI_Code_FP",
-    "project_version":    "f773f57-dirty",
+    "project_version":    "edb78f1-dirty",
     "project_path":       "E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP",
     "idf_path":           "C:/esp/v5.5.4/esp-idf",
     "build_dir":          "E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build",

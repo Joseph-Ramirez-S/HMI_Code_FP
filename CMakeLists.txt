@@ -10,10 +10,10 @@ set(EXTRA_COMPONENT_DIRS "peripheral")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(HMI_Code_FP)
 
-# Empaquetamos el fondo y la animacion usados por el renderizador.
+# Empaquetamos los fondos, animaciones y elementos laterales del renderizador.
 set(SPIFFS_ASSETS_DIR "${CMAKE_BINARY_DIR}/spiffs_assets")
 file(MAKE_DIRECTORY "${SPIFFS_ASSETS_DIR}")
-foreach(asset roomde.png neko_strip6.png elevator_door_strip8.png Level_indicator.png elevator_inside.png)
+foreach(asset roomde.png neko_strip6.png elevator_door_strip8.png Level_indicator.png elevator_inside.png Panel_pixelado.png botones_ascensor.png luces_ascensor.png)
     configure_file(
         "${CMAKE_CURRENT_LIST_DIR}/../Bridge/assets/${asset}"
         "${SPIFFS_ASSETS_DIR}/${asset}"

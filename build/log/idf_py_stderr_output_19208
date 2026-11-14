@@ -1,0 +1,13 @@
+Command: cmake -G Ninja -DPYTHON_DEPS_CHECKED=1 -DPYTHON=C:\Users\Joseph.R\.espressif\python_env\idf5.5_py3.13_env\Scripts\python.exe -DESP_PLATFORM=1 -DCCACHE_ENABLE=1 E:\Tareas_realizadas_cuatrimestre_SEPT-DIC-2025\Controlles_II\Final_Proyect\HMI_Code_FP
+CMake Warning at C:/esp/v5.5.4/esp-idf/tools/cmake/build.cmake:629 (message):
+Call Stack (most recent call first):
+  C:/esp/v5.5.4/esp-idf/tools/cmake/project.cmake:752 (idf_build_process)
+  CMakeLists.txt:11 (project)
+
+
+CMake Warning at C:/esp/v5.5.4/esp-idf/tools/cmake/project.cmake:765 (message):
+  Missing kconfig option.  Re-run the build process...
+Call Stack (most recent call first):
+  CMakeLists.txt:11 (project)
+
+
