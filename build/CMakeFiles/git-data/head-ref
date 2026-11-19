@@ -1,1 +1,4 @@
-edb78f128dee7f448f02617c8aea9f5eca1bb0c5
+0000000000000000000000000000000000000000 58a3200d20ebef1a823f6e2e144b9858dfe32ebe MiDMoon04 <josephrs20@hotmail.com> 1787028623 -0400	clone: from https://github.com/Joseph-Ramirez-S/HMI_Code_FP.git
+58a3200d20ebef1a823f6e2e144b9858dfe32ebe f773f571807729dfb9b7ef0c6e27812bfc6833e1 MiDMoon04 <josephrs20@hotmail.com> 1792904248 -0400	commit: Implementacion de entorno, y algunos sprites animation a medias
+f773f571807729dfb9b7ef0c6e27812bfc6833e1 edb78f128dee7f448f02617c8aea9f5eca1bb0c5 MiDMoon04 <josephrs20@hotmail.com> 1793592325 -0400	commit: Transiciones añadidas + Introduccion al 2do escenario
+edb78f128dee7f448f02617c8aea9f5eca1bb0c5 bbc8d972f28d737fcb18567340cbb900d79ef7c6 MiDMoon04 <josephrs20@hotmail.com> 1794619916 -0400	commit: feat: Adicion de panel del ascensor en el 2do escenario + ajustes

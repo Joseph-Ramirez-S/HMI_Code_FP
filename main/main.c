@@ -2,221 +2,186 @@
 #include "main.h"
 #include "esp_lcd_panel_ops.h" 
 #include "esp_heap_caps.h"     
-#include "esp_spiffs.h"
+#include "esp_partition.h"
+#include "engine_bridge.h"
+#include "panel_graphics.h"
+#include "driver/gpio.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
+#include "freertos/semphr.h"
 
-// --- PROTECCIÓN PARA LA MEMORIA RAM (STB_IMAGE EN PSRAM) ---
-#define STBI_NO_SIMD
-#define STBI_NO_THREAD_LOCALS
-#define STBI_MALLOC(sz)           heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-#define STBI_REALLOC(p,newsz)     heap_caps_realloc(p, newsz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-#define STBI_FREE(p)              heap_caps_free(p)
-#define STB_IMAGE_IMPLEMENTATION
-#define FRAME_SPEED_TRANSITION 4
-#define ANIMATION_FRAME_RATE_HZ 60U
+#define GPIO_OUT_LEVEL_1 GPIO_NUM_50
+#define GPIO_OUT_LEVEL_2 GPIO_NUM_51
+#define GPIO_OUT_LEVEL_3 GPIO_NUM_53
+#define GPIO_OUT_EMERGENCY GPIO_NUM_5
+#define GPIO_IN_LEVEL_1 GPIO_NUM_25
+#define GPIO_IN_LEVEL_2 GPIO_NUM_27
+#define GPIO_IN_LEVEL_3 GPIO_NUM_28
+
+#define INPUT_POLL_HZ 90U
+#define FRAME_BUDGET_US (1000000U / 60U)
 #define FRAME_STATS_INTERVAL_US 5000000LL
-#define RECEPTIONIST_FRAME_COLUMNS 12
-#define RECEPTIONIST_FRAME_ROWS 2
 #define ANIMATION_TASK_STACK_SIZE 16384U
-#include "stb_image.h"
-
-// 1. Incluimos nuestro intermediario
-#include "engine_bridge.h" 
-
 // --- VARIABLES EXTERNAS ---
 extern esp_lcd_panel_handle_t panel_handle;
 
 static esp_ldo_channel_handle_t ldo3 = NULL;
 static esp_ldo_channel_handle_t ldo4 = NULL;
 
-// Variable global para mantener los píxeles en memoria
-static uint16_t* background_pixels = NULL;
-static uint16_t* receptionist_pixels = NULL;
-static uint16_t* neko_pixels = NULL;
-static uint16_t* elevator_door_pixels = NULL;
-static uint16_t* level_indicator_pixels = NULL;
-static uint16_t* agent_shadow_pixels = NULL;
-static uint16_t* elevator_inside_pixels = NULL;
-static uint16_t* elevator_inside_door_pixels = NULL;
-static uint16_t* elevator_panel_pixels = NULL;
-static uint16_t* elevator_buttons_pixels = NULL;
-static uint16_t* elevator_lights_pixels = NULL;
 static bool touch_available = false;
+static atomic_bool intro_complete = ATOMIC_VAR_INIT(false);
 
-// ---------------------------------------------------------
-// 1. SISTEMA DE ARCHIVOS (LittleFS / SPIFFS)
-// ---------------------------------------------------------
-esp_err_t init_spiffs(void) {
-    esp_vfs_spiffs_conf_t conf = {
-      .base_path = "/storage",
-      .partition_label = "storage",
-      .max_files = 5,
-      .format_if_mount_failed = true
+_Static_assert(H_size == BRIDGE_PANEL_WIDTH && V_size == BRIDGE_PANEL_HEIGHT,
+               "Prepare the graphics for the configured LCD resolution");
+
+static esp_err_t map_graphics(void) {
+    const esp_partition_t *partition = esp_partition_find_first(
+        (esp_partition_type_t)0x40, ESP_PARTITION_SUBTYPE_ANY, "graphics");
+    if (!partition) return ESP_ERR_NOT_FOUND;
+    const size_t size = bridge_graphics_pack_size();
+    if (size > partition->size) return ESP_ERR_INVALID_SIZE;
+
+    const void *data = NULL;
+    esp_partition_mmap_handle_t handle;
+    esp_err_t err = esp_partition_mmap(partition, 0, size, ESP_PARTITION_MMAP_DATA,
+                                       &data, &handle);
+    if (err != ESP_OK) return err;
+    if (!bridge_bind_graphics(data, size)) {
+        esp_partition_munmap(handle);
+        return ESP_ERR_INVALID_VERSION;
+    }
+    // The Bridge reads these flash pages for the lifetime of the display task.
+    MAIN_INFO("Graficos RGB565 en flash: %u bytes. PSRAM libre: %u bytes",
+              (unsigned)size, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    return ESP_OK;
+}
+
+static void wait_for_input_poll(TickType_t *last_wake,
+                                         uint32_t *tick_remainder) {
+    *tick_remainder += configTICK_RATE_HZ % INPUT_POLL_HZ;
+    TickType_t frame_ticks = configTICK_RATE_HZ / INPUT_POLL_HZ;
+    if (*tick_remainder >= INPUT_POLL_HZ) {
+        ++frame_ticks;
+        *tick_remainder -= INPUT_POLL_HZ;
+    }
+    if (frame_ticks == 0) {
+        frame_ticks = 1;
+    }
+    vTaskDelayUntil(last_wake, frame_ticks);
+}
+
+static esp_err_t elevator_gpio_init(void) {
+    const gpio_config_t output_config = {
+        .pin_bit_mask = (1ULL << GPIO_OUT_LEVEL_1) |
+                        (1ULL << GPIO_OUT_LEVEL_2) |
+                        (1ULL << GPIO_OUT_LEVEL_3) |
+                        (1ULL << GPIO_OUT_EMERGENCY),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
     };
-    esp_err_t ret = esp_vfs_spiffs_register(&conf);
-    if (ret != ESP_OK) {
-        MAIN_ERROR("Error inicializando SPIFFS");
-    } else {
-        MAIN_INFO("SPIFFS montado correctamente.");
+    esp_err_t err = gpio_config(&output_config);
+    if (err != ESP_OK) {
+        return err;
     }
-    return ret;
+
+    const gpio_num_t output_pins[] = {
+        GPIO_OUT_LEVEL_1, GPIO_OUT_LEVEL_2,
+        GPIO_OUT_LEVEL_3, GPIO_OUT_EMERGENCY
+    };
+    for (size_t i = 0; i < sizeof(output_pins) / sizeof(output_pins[0]); ++i) {
+        err = gpio_set_level(output_pins[i], 0);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    const gpio_config_t input_config = {
+        .pin_bit_mask = (1ULL << GPIO_IN_LEVEL_1) |
+                        (1ULL << GPIO_IN_LEVEL_2) |
+                        (1ULL << GPIO_IN_LEVEL_3),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    return gpio_config(&input_config);
 }
 
-// ---------------------------------------------------------
-// 2. FUNCIÓN DE CARGA SEGURA PARA EL ESP32
-// ---------------------------------------------------------
-bool load_png_to_rgb565_esp32(const char* filepath, SpriteID sprite_id) {
-    int w, h, channels;
-    unsigned char* raw = stbi_load(filepath, &w, &h, &channels, 4);
-    if (raw == NULL) {
-        MAIN_ERROR("Fallo al decodificar %s: %s", filepath, stbi_failure_reason());
-        return false;
+static void update_elevator_gpio_outputs(void) {
+    const int pressed_button = bridge_get_pressed_elevator_button();
+    const gpio_num_t output_pins[] = {
+        GPIO_OUT_LEVEL_1, GPIO_OUT_LEVEL_2,
+        GPIO_OUT_LEVEL_3, GPIO_OUT_EMERGENCY
+    };
+    const int button_indices[] = {0, 1, 2, 5};
+    for (size_t i = 0; i < sizeof(output_pins) / sizeof(output_pins[0]); ++i) {
+        const esp_err_t err = gpio_set_level(
+            output_pins[i], pressed_button == button_indices[i] ? 1 : 0);
+        if (err != ESP_OK) {
+            MAIN_ERROR("No se pudo actualizar GPIO%d: %s",
+                       output_pins[i], esp_err_to_name(err));
+        }
     }
-
-    if (w <= 0 || h <= 0 ||
-        (size_t)w > SIZE_MAX / (size_t)h / 4) {
-        MAIN_ERROR("Dimensiones de imagen invalidas: %s", filepath);
-        stbi_image_free(raw);
-        return false;
-    }
-    if (sprite_id == SPRITE_RECEPTIONIST &&
-        (w % RECEPTIONIST_FRAME_COLUMNS != 0 ||
-         h % RECEPTIONIST_FRAME_ROWS != 0)) {
-        MAIN_ERROR("La hoja de la recepcionista debe tener 12 columnas y 2 filas: %s",
-                   filepath);
-        stbi_image_free(raw);
-        return false;
-    }
-    if (sprite_id == SPRITE_AGENT_SHADOW && (w % 8 != 0 || h <= 0)) {
-        MAIN_ERROR("La hoja del agente sombra debe tener 8 columnas: %s", filepath);
-        stbi_image_free(raw);
-        return false;
-    }
-    if (sprite_id == SPRITE_ELEVATOR_INSIDE_DOOR && (w < 8 || h <= 0)) {
-        MAIN_ERROR("La hoja de la puerta interior no contiene 8 cuadros: %s", filepath);
-        stbi_image_free(raw);
-        return false;
-    }
-
-    const size_t pixel_count = (size_t)w * (size_t)h;
-    uint16_t* pixels = (uint16_t*)raw;
-    for (size_t i = 0; i < pixel_count; ++i) {
-        const uint8_t r = raw[i * 4 + 0] >> 3;
-        const uint8_t g = raw[i * 4 + 1] >> 2;
-        const uint8_t b = raw[i * 4 + 2] >> 3;
-        const uint8_t a = raw[i * 4 + 3];
-        pixels[i] = a == 0 ? 0xF81F : (uint16_t)((r << 11) | (g << 5) | b);
-    }
-
-    uint16_t* compact_pixels = (uint16_t*)heap_caps_realloc(
-        pixels, pixel_count * sizeof(*pixels), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (compact_pixels == NULL) {
-        MAIN_ERROR("No se pudo compactar la imagen %s; se conserva el buffer original",
-                   filepath);
-    } else {
-        pixels = compact_pixels;
-    }
-
-    MAIN_INFO("Imagen decodificada con exito: %s (%dx%d)", filepath, w, h);
-    if (sprite_id == SPRITE_BACKGROUND) {
-        background_pixels = pixels;
-    } else if (sprite_id == SPRITE_RECEPTIONIST) {
-        receptionist_pixels = pixels;
-    } else if (sprite_id == SPRITE_NEKO) {
-        neko_pixels = pixels;
-    } else if (sprite_id == SPRITE_ELEVATOR_DOOR) {
-        elevator_door_pixels = pixels;
-    } else if (sprite_id == SPRITE_LEVEL_INDICATOR) {
-        level_indicator_pixels = pixels;
-    } else if (sprite_id == SPRITE_AGENT_SHADOW) {
-        agent_shadow_pixels = pixels;
-    } else if (sprite_id == SPRITE_ELEVATOR_INSIDE_BACKGROUND) {
-        elevator_inside_pixels = pixels;
-    } else if (sprite_id == SPRITE_ELEVATOR_INSIDE_DOOR) {
-        elevator_inside_door_pixels = pixels;
-    } else if (sprite_id == SPRITE_ELEVATOR_PANEL) {
-        elevator_panel_pixels = pixels;
-    } else if (sprite_id == SPRITE_ELEVATOR_BUTTONS) {
-        elevator_buttons_pixels = pixels;
-    } else if (sprite_id == SPRITE_ELEVATOR_LIGHTS) {
-        elevator_lights_pixels = pixels;
-    }
-    bridge_set_sprite(sprite_id, pixels, w, h);
-    return true;
 }
-// ---------------------------------------------------------
-// 3. MOTOR GRÁFICO UNIVERSAL (Enlazado al Bridge)
-// ---------------------------------------------------------
+
+static void update_elevator_gpio_inputs(void) {
+    int level = 0;
+    if (gpio_get_level(GPIO_IN_LEVEL_1)) {
+        level = 1;
+    } else if (gpio_get_level(GPIO_IN_LEVEL_2)) {
+        level = 2;
+    } else if (gpio_get_level(GPIO_IN_LEVEL_3)) {
+        level = 3;
+    }
+    bridge_set_elevator_level(level);
+}
+
+// Display initialization and submission run on the same core as the DSI DMA ISR.
+static StaticSemaphore_t refresh_storage;
+static SemaphoreHandle_t refresh_signal;
+static atomic_uint refresh_count = ATOMIC_VAR_INIT(0);
+
+static bool IRAM_ATTR refresh_done(esp_lcd_panel_handle_t panel,
+                                   esp_lcd_dpi_panel_event_data_t *event, void *ctx) {
+    BaseType_t wake = pdFALSE;
+    atomic_fetch_add_explicit(&refresh_count, 1, memory_order_relaxed);
+    xSemaphoreGiveFromISR(refresh_signal, &wake);
+    return wake == pdTRUE;
+}
+
+static uint32_t lcd_refreshes(void) {
+    return atomic_load_explicit(&refresh_count, memory_order_relaxed);
+}
+
+static void wait_for_refresh(uint32_t *previous) {
+    uint32_t current;
+    while ((current = lcd_refreshes()) == *previous) {
+        if (xSemaphoreTake(refresh_signal, pdMS_TO_TICKS(250)) != pdTRUE &&
+            lcd_refreshes() == *previous) {
+            MAIN_ERROR("El LCD no ha completado un refresco en 250 ms");
+        }
+    }
+    *previous = current;
+}
+
+static void init_fail_handler(const char *module_name, esp_err_t err);
+
 static void animation_game_task(void *pvParameters) {
-    MAIN_INFO("Tarea de video iniciada. Decodificando recursos...");
-    
-    if (!load_png_to_rgb565_esp32("/storage/roomde.png", SPRITE_BACKGROUND)) {
-        vTaskDelete(NULL);
-        return;
-    }
-    if (!load_png_to_rgb565_esp32(
-            "/storage/la_que_atiende_strip4.png", SPRITE_RECEPTIONIST)) {
-        MAIN_ERROR("No se pudo cargar la animacion de la recepcionista");
-        vTaskDelete(NULL);
-        return;
-    }
-    if (!load_png_to_rgb565_esp32("/storage/neko_strip6.png", SPRITE_NEKO)) {
-        MAIN_ERROR("No se pudo cargar la animacion de Neko");
-        vTaskDelete(NULL);
-        return;
-    }
-    if (!load_png_to_rgb565_esp32(
-            "/storage/elevator_door_strip8.png", SPRITE_ELEVATOR_DOOR)) {
-        MAIN_ERROR("No se pudo cargar la animacion de las puertas del ascensor");
-        vTaskDelete(NULL);
-        return;
-    }
-    if (!load_png_to_rgb565_esp32(
-            "/storage/Level_indicator.png", SPRITE_LEVEL_INDICATOR)) {
-        MAIN_ERROR("No se pudo cargar la animacion del indicador de nivel");
-        vTaskDelete(NULL);
-        return;
-    }
-    if (!load_png_to_rgb565_esp32(
-            "/storage/agente.png", SPRITE_AGENT_SHADOW)) {
-        MAIN_ERROR("No se pudo cargar la animacion del agente sombra");
-        vTaskDelete(NULL);
-        return;
-    }
-    if (!load_png_to_rgb565_esp32(
-            "/storage/elevator_inside.png", SPRITE_ELEVATOR_INSIDE_BACKGROUND)) {
-        MAIN_ERROR("No se pudo cargar el interior del ascensor");
-        vTaskDelete(NULL);
-        return;
-    }
-    if (!load_png_to_rgb565_esp32(
-            "/storage/Panel_pixelado.png", SPRITE_ELEVATOR_PANEL)) {
-        MAIN_ERROR("No se pudo cargar el panel del ascensor");
-        vTaskDelete(NULL);
-        return;
-    }
-    if (!load_png_to_rgb565_esp32(
-            "/storage/botones_ascensor.png", SPRITE_ELEVATOR_BUTTONS)) {
-        MAIN_ERROR("No se pudieron cargar los botones del ascensor");
-        vTaskDelete(NULL);
-        return;
-    }
-    if (!load_png_to_rgb565_esp32(
-            "/storage/luces_ascensor.png", SPRITE_ELEVATOR_LIGHTS)) {
-        MAIN_ERROR("No se pudieron cargar las luces del ascensor");
-        vTaskDelete(NULL);
-        return;
-    }
-    if (!load_png_to_rgb565_esp32(
-            "/storage/inside_door.png", SPRITE_ELEVATOR_INSIDE_DOOR)) {
-        MAIN_ERROR("No se pudo cargar la puerta del interior del ascensor");
-        vTaskDelete(NULL);
-        return;
-    }
-
+    esp_err_t err = display_init();
+    if (err != ESP_OK) init_fail_handler("LCD", err);
+    refresh_signal = xSemaphoreCreateBinaryStatic(&refresh_storage);
+    const esp_lcd_dpi_panel_event_callbacks_t callbacks = {.on_refresh_done = refresh_done};
+    err = esp_lcd_dpi_panel_register_event_callbacks(panel_handle, &callbacks, NULL);
+    if (err != ESP_OK) init_fail_handler("refresco DPI", err);
+    err = panel_graphics_init();
+    if (err != ESP_OK) MAIN_ERROR("Aceleracion DMA2D no disponible: %s; usando CPU", esp_err_to_name(err));
+    err = set_lcd_blight(100);
+    if (err != ESP_OK) init_fail_handler("LCD Backlight", err);
     void *framebuffers[2] = { NULL, NULL };
-    esp_err_t err = esp_lcd_dpi_panel_get_frame_buffer(
+    err = esp_lcd_dpi_panel_get_frame_buffer(
         panel_handle, 2, &framebuffers[0], &framebuffers[1]);
     if (err != ESP_OK || framebuffers[0] == NULL || framebuffers[1] == NULL) {
         MAIN_ERROR("No se pudieron obtener los framebuffers del LCD: %s",
@@ -226,16 +191,65 @@ static void animation_game_task(void *pvParameters) {
     }
 
     uint8_t back_buffer_index = 1;
-    TickType_t last_wake = xTaskGetTickCount();
-    uint32_t frame_tick_remainder = 0;
-    uint32_t frames_in_window = 0;
-    uint32_t frames_rendered_in_window = 0;
-    uint32_t frame_deadline_misses = 0;
-    uint64_t frame_work_time_us = 0;
-    uint32_t max_frame_work_us = 0;
+    uint32_t last_refresh = lcd_refreshes();
+    unsigned opening_frames = 0;
+    int64_t opening_start_us = 0;
+    int displayed_intro_frame = -1;
+    const int64_t intro_start_us = esp_timer_get_time();
+    for (;;) {
+        wait_for_refresh(&last_refresh);
+        const int64_t elapsed_us = esp_timer_get_time() - intro_start_us;
+        const uint32_t elapsed_ms = (uint32_t)(elapsed_us / 1000);
+        const int frame_index = bridge_intro_frame_at(elapsed_ms);
+        const bool opening = elapsed_ms >= BRIDGE_INTRO_OPEN_MS;
+        const bool finished = elapsed_ms >= BRIDGE_INTRO_END_MS;
+        if (opening || frame_index != displayed_intro_frame) {
+            uint16_t *framebuffer = (uint16_t *)framebuffers[back_buffer_index];
+            if (!bridge_render_intro(framebuffer, elapsed_ms)) {
+                MAIN_ERROR("No se pudo componer la introduccion");
+                vTaskDelete(NULL);
+                return;
+            }
+            displayed_intro_frame = frame_index;
+            err = esp_lcd_panel_draw_bitmap(
+                panel_handle, 0, 0, H_size, V_size, framebuffer);
+            if (err != ESP_OK) {
+                MAIN_ERROR("Error transmitiendo la introduccion al LCD: %s",
+                           esp_err_to_name(err));
+                vTaskDelete(NULL);
+                return;
+            }
+            // Wait for a boundary strictly after publishing the new buffer
+            // before writing to the buffer the DMA was previously scanning.
+            last_refresh = lcd_refreshes();
+            back_buffer_index ^= 1;
+            if (opening) {
+                if (!opening_frames) opening_start_us = elapsed_us;
+                ++opening_frames;
+            }
+        }
+
+        if (finished) {
+            break;
+        }
+    }
+    const int64_t opening_us = esp_timer_get_time() - intro_start_us - opening_start_us;
+    MAIN_INFO("Apertura de introduccion: %u cuadros en %u ms",
+              opening_frames, (unsigned)(opening_us / 1000));
+    panel_graphics_finish_intro();
+    MAIN_INFO("PSRAM al terminar la introduccion: libre %u bytes, minimo desde el arranque %u bytes",
+              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
+    atomic_store_explicit(&intro_complete, true, memory_order_release);
+
+    uint32_t frames_in_window = 0, submitted = 0, over_budget = 0;
+    uint32_t first_refresh = lcd_refreshes(), presented_revision = 0;
+    uint32_t max_render_us = 0, max_submit_us = 0;
+    int pending_top = V_size, pending_bottom = 0;
     int64_t window_start_us = esp_timer_get_time();
 
     for (;;) {
+        wait_for_refresh(&last_refresh);
         const int64_t frame_start_us = esp_timer_get_time();
         if (panel_handle == NULL) {
             MAIN_ERROR("El panel LCD no esta disponible para transmitir cuadros");
@@ -243,69 +257,59 @@ static void animation_game_task(void *pvParameters) {
             return;
         }
         uint16_t *framebuffer = (uint16_t *)framebuffers[back_buffer_index];
-        if (!bridge_render_frame(framebuffer, H_size, V_size)) {
+        if (!bridge_render_frame_at(framebuffer, H_size, V_size, (uint64_t)frame_start_us)) {
             MAIN_ERROR("No se pudo componer el cuadro de animacion");
             vTaskDelete(NULL);
             return;
         }
 
+        const int64_t render_end_us = esp_timer_get_time();
+        const uint32_t revision = bridge_frame_revision();
         if (bridge_frame_was_rendered()) {
-            ++frames_rendered_in_window;
+            int top, bottom;
+            bridge_frame_rows(&top, &bottom);
+            if (top < pending_top) pending_top = top;
+            if (bottom > pending_bottom) pending_bottom = bottom;
+        }
+        // An unchanged front image can leave newly written rows in the
+        // back buffer's CPU cache. Flush them on its next real presentation.
+        if (pending_bottom > pending_top && revision != presented_revision) {
             err = esp_lcd_panel_draw_bitmap(
-                panel_handle, 0, 0, H_size, V_size, framebuffer);
+                panel_handle, 0, pending_top, H_size, pending_bottom, framebuffer);
             if (err != ESP_OK) {
                 MAIN_ERROR("Error transmitiendo cuadro al LCD: %s",
                            esp_err_to_name(err));
                 vTaskDelete(NULL);
                 return;
             }
+            presented_revision = revision;
+            pending_top = V_size;
+            pending_bottom = 0;
+            last_refresh = lcd_refreshes();
+            ++submitted;
             back_buffer_index ^= 1;
         }
 
         const int64_t frame_end_us = esp_timer_get_time();
-        const uint32_t frame_work_us = (uint32_t)(frame_end_us - frame_start_us);
-        frame_work_time_us += frame_work_us;
-        if (frame_work_us > max_frame_work_us) {
-            max_frame_work_us = frame_work_us;
-        }
-        const uint32_t frame_budget_us = 1000000 / ANIMATION_FRAME_RATE_HZ;
-        const uint32_t tick_period_us = 1000000 / configTICK_RATE_HZ;
-        const bool frame_missed_deadline =
-            frame_work_us >= frame_budget_us - tick_period_us;
-        if (frame_missed_deadline) {
-            ++frame_deadline_misses;
-        }
+        const uint32_t render_us = (uint32_t)(render_end_us - frame_start_us);
+        const uint32_t submit_us = (uint32_t)(frame_end_us - render_end_us);
+        if (render_us > max_render_us) max_render_us = render_us;
+        if (submit_us > max_submit_us) max_submit_us = submit_us;
+        if (render_us + submit_us > FRAME_BUDGET_US) ++over_budget;
         ++frames_in_window;
-        if (frame_end_us - window_start_us >= FRAME_STATS_INTERVAL_US) {
-            const uint64_t elapsed_us = frame_end_us - window_start_us;
-            const uint32_t fps_tenths =
-                (uint32_t)((uint64_t)frames_in_window * 10000000ULL / elapsed_us);
-            const uint32_t average_work_us =
-                (uint32_t)(frame_work_time_us / frames_in_window);
-            MAIN_INFO("Video: %u.%u FPS, composiciones: %u, "
-                      "trabajo promedio/maximo: %u/%u us, "
-                      "plazos perdidos: %u",
-                      fps_tenths / 10, fps_tenths % 10,
-                      frames_rendered_in_window, average_work_us,
-                      max_frame_work_us, frame_deadline_misses);
-            frames_in_window = 0;
-            frames_rendered_in_window = 0;
-            frame_deadline_misses = 0;
-            frame_work_time_us = 0;
-            max_frame_work_us = 0;
+        const int64_t elapsed_us = frame_end_us - window_start_us;
+        if (elapsed_us >= FRAME_STATS_INTERVAL_US) {
+            const uint32_t now_refresh = lcd_refreshes();
+            const unsigned lcd = (unsigned)((uint64_t)(now_refresh - first_refresh) * 10000000 / elapsed_us);
+            const unsigned engine = (unsigned)((uint64_t)frames_in_window * 10000000 / elapsed_us);
+            const unsigned updates = (unsigned)((uint64_t)submitted * 10000000 / elapsed_us);
+            MAIN_INFO("LCD %u.%u Hz | motor %u.%u Hz | enviados %u.%u FPS | "
+                      "max render/envio %u/%u us | >16.67 ms %u/%u",
+                      lcd / 10, lcd % 10, engine / 10, engine % 10, updates / 10, updates % 10,
+                      max_render_us, max_submit_us, over_budget, frames_in_window);
+            first_refresh = now_refresh;
+            frames_in_window = submitted = over_budget = max_render_us = max_submit_us = 0;
             window_start_us = frame_end_us;
-        }
-
-        frame_tick_remainder += configTICK_RATE_HZ % ANIMATION_FRAME_RATE_HZ;
-        TickType_t frame_ticks = configTICK_RATE_HZ / ANIMATION_FRAME_RATE_HZ;
-        if (frame_tick_remainder >= ANIMATION_FRAME_RATE_HZ) {
-            ++frame_ticks;
-            frame_tick_remainder -= ANIMATION_FRAME_RATE_HZ;
-        }
-        vTaskDelayUntil(&last_wake, frame_ticks);
-        if (frame_work_us >= frame_budget_us) {
-            last_wake = xTaskGetTickCount();
-            frame_tick_remainder = 0;
         }
     }
 }
@@ -322,6 +326,9 @@ static void init_fail_handler(const char *module_name, esp_err_t err) {
 
 static void system_init(void) {
     esp_err_t err = ESP_OK;
+
+    err = elevator_gpio_init();
+    if (err != ESP_OK) init_fail_handler("GPIO del ascensor", err);
 
     esp_ldo_channel_config_t ldo3_cof = { .chan_id = 3, .voltage_mv = 2500, };
     err = esp_ldo_acquire_channel(&ldo3_cof, &ldo3);
@@ -343,12 +350,7 @@ static void system_init(void) {
         touch_available = true;
     }
 
-    MAIN_INFO("Initializing LCD MIPI-DSI...");
-    err = display_init();
-    if (err != ESP_OK) init_fail_handler("LCD", err);
 
-    err = set_lcd_blight(100);
-    if (err != ESP_OK) init_fail_handler("LCD Backlight", err);
 }
 
 // ---------------------------------------------------------
@@ -358,16 +360,12 @@ void app_main(void)
 {
     MAIN_INFO("Iniciando Arquitectura Unificada (Bridge PC-ESP32)...");
     system_init();
-    esp_err_t err = init_spiffs();
-    if (err != ESP_OK) init_fail_handler("SPIFFS", err);
     bridge_init();
-    bridge_set_receptionist_frame_delay(FRAME_SPEED_TRANSITION + 2);
-    bridge_set_neko_frame_delay(FRAME_SPEED_TRANSITION);
-    bridge_set_elevator_door_frame_delay(FRAME_SPEED_TRANSITION - 1);
-    bridge_set_level_indicator_frame_delay(FRAME_SPEED_TRANSITION + 7);
-    bridge_set_agent_shadow_frame_delay(FRAME_SPEED_TRANSITION);
+    esp_err_t err = map_graphics();
+    if (err != ESP_OK) init_fail_handler("particion graphics (RGB565)", err);
+    bridge_set_elevator_level(0);
+    bridge_set_elevator_indicator_test_mode(false);
 
-    // Lanzamos directamente la tarea gráfica, ella hará la carga de memoria pesada
     if (xTaskCreatePinnedToCore(animation_game_task, "Animacion_DSI",
                                 ANIMATION_TASK_STACK_SIZE, NULL, 5, NULL, 1) != pdPASS) {
         init_fail_handler("tarea grafica", ESP_ERR_NO_MEM);
@@ -375,10 +373,17 @@ void app_main(void)
 
     bool touch_was_pressed = false;
     uint8_t touch_release_samples = 0;
+    TickType_t input_last_wake = xTaskGetTickCount();
+    uint32_t input_tick_remainder = 0;
     for (;;) {
+        wait_for_input_poll(&input_last_wake, &input_tick_remainder);
+        if (!atomic_load_explicit(&intro_complete, memory_order_acquire)) {
+            continue;
+        }
+        update_elevator_gpio_inputs();
+        update_elevator_gpio_outputs();
         if (touch_available) {
             if (touch_read() != ESP_OK) {
-                vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
             }
 
@@ -403,9 +408,6 @@ void app_main(void)
                     touch_release_samples = 0;
                 }
             }
-            vTaskDelay(pdMS_TO_TICKS(10));
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
 }

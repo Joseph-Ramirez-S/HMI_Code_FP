@@ -7,9 +7,6 @@
 esp_lcd_panel_handle_t panel_handle = NULL;          /* Type of LCD panel handle */
 static esp_lcd_dsi_bus_handle_t mipi_dsi_bus = NULL; /* Type of MIPI DSI bus handle */
 static esp_lcd_panel_io_handle_t mipi_dbi_io = NULL; /* Type of LCD panel IO handle */
-static lv_display_t *my_lvgl_disp = NULL;            /* Backward compatibility with LVGL 8 */
-static lv_indev_t *my_touch_indev;
-
 /*————————————————————————————————————————Variable declaration end———————————————————————————————————————*/
 
 /*—————————————————————————————————————————Functional function———————————————————————————————————————————*/
@@ -107,24 +104,14 @@ static esp_err_t display_port_init(void)  // Initialize LCD port (MIPI DSI + pan
     else if (BITS_PER_PIXEL == 16)
         dpi_pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565;  // 16-bit RGB565
 
-    const esp_lcd_dpi_panel_config_t dpi_config = {  // DPI panel config
-        .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,  // Default DPI clock source
-        .dpi_clock_freq_mhz = 55,                      // 60 Hz at 1024x600 with these porches
-        .virtual_channel = 0,                         // Virtual channel = 0
-        .pixel_format = dpi_pixel_format,             // Pixel format
-        .num_fbs = 2,                                 // Double buffering prevents tearing
-        .video_timing = {                             // Video timing parameters
-            .h_size = H_size,                         // Horizontal size
-            .v_size = V_size,                         // Vertical size
-            .hsync_back_porch = 160,                  // HSync back porch
-            .hsync_pulse_width = 70,                  // HSync pulse width
-            .hsync_front_porch = 160,                 // HSync front porch
-            .vsync_back_porch = 23,                   // VSync back porch
-            .vsync_pulse_width = 10,                  // VSync pulse width
-            .vsync_front_porch = 12,                  // VSync front porch
-        },
-        .flags.use_dma2d = true,                      // Enable DMA2D
-    };
+    esp_lcd_dpi_panel_config_t dpi_config =
+        EK79007_1024_600_PANEL_60HZ_CONFIG(dpi_pixel_format);
+    // IDF rounds the DPI divider to an integer. 160 MHz / 3 with the
+    // controller's 1354 x 636 total timing gives about 61.9 refreshes/s.
+    dpi_config.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_PLL_F160M;
+    dpi_config.dpi_clock_freq_mhz = 53.333f;
+    dpi_config.num_fbs = 2;
+    dpi_config.flags.use_dma2d = false; // Bridge submits driver-owned buffers directly.
 
     ek79007_vendor_config_t vendor_config = {  // Vendor-specific config
         .mipi_config = {
@@ -150,87 +137,6 @@ static esp_err_t display_port_init(void)  // Initialize LCD port (MIPI DSI + pan
     return err;  // Return success
 }
 
-static esp_err_t lvgl_init()  // Initialize LVGL
-{
-    
-    esp_err_t err = ESP_OK;
-    const lvgl_port_cfg_t lvgl_cfg = {  // LVGL port configuration
-        .task_priority = configMAX_PRIORITIES - 4, /* LVGL task priority */
-        .task_stack = 8192*2,                      /* LVGL task stack size */
-        .task_affinity = 1,                       /* Task pinned to core (-1 = no affinity) */
-        .task_max_sleep_ms = 10,                   /* Max sleep in LVGL task */
-        .timer_period_ms = 1,                      /* LVGL timer tick period in ms */
-    };
-    err = lvgl_port_init(&lvgl_cfg);  // Initialize LVGL port
-    if (err != ESP_OK)
-    {
-        ILLUMINATE_ERROR("LVGL port initialization failed");
-    }
-
-    const lvgl_port_display_cfg_t disp_cfg = {  // LVGL display configuration
-        .io_handle = mipi_dbi_io,                // IO handle
-        .panel_handle = panel_handle,            // Panel handle
-        .control_handle = panel_handle,          // Control handle
-        .buffer_size = (H_size * V_size * ((BITS_PER_PIXEL + 7) / 8)),  // Frame buffer size
-        .double_buffer = false,                   // Enable double buffer
-        .hres = H_size,                          // Horizontal resolution
-        .vres = V_size,                          // Vertical resolution
-        .monochrome = false,                     // Not monochrome
-#if LVGL_VERSION_MAJOR >= 9
-        .color_format = LV_COLOR_FORMAT_RGB565,  // Color format
-#endif
-        .rotation = {                            // Rotation config
-            .swap_xy = false,
-            .mirror_x = false,
-            .mirror_y = false,
-        },
-        .flags = {                               // Display flags
-            .buff_dma = true,                   // Buffer not in DMA
-            .buff_spiram = true,                 // Buffer in SPIRAM
-            .sw_rotate = true,                   // Enable software rotation
-#if LVGL_VERSION_MAJOR >= 9
-            .swap_bytes = false,                  // Swap bytes (LVGL v9+)
-#endif
-#if CONFIG_DISPLAY_LVGL_FULL_REFRESH
-            .full_refresh = true,                // Enable full refresh
-#else
-            .full_refresh = false,               // Disable full refresh
-#endif
-#if CONFIG_DISPLAY_LVGL_DIRECT_MODE
-            .direct_mode = true,                 // Enable direct mode
-#else
-            .direct_mode = false,                // Disable direct mode
-#endif
-        },
-    };
-    const lvgl_port_display_dsi_cfg_t lvgl_dpi_cfg = {  // LVGL DSI configuration
-        .flags = {
-#if CONFIG_DISPLAY_LVGL_AVOID_TEAR
-            .avoid_tearing = true,               // Enable tearing avoidance
-#else
-            .avoid_tearing = false,              // Disable tearing avoidance
-#endif
-        },
-    };
-    my_lvgl_disp = lvgl_port_add_disp_dsi(&disp_cfg, &lvgl_dpi_cfg);  // Add LVGL display
-    if (my_lvgl_disp == NULL)
-    {
-        err = ESP_FAIL;
-        ILLUMINATE_ERROR("LVGL dsi port add fail");
-    }
-    const lvgl_port_touch_cfg_t touch_cfg = {
-        .disp = my_lvgl_disp,
-        .handle = tp,
-    };
-    my_touch_indev = lvgl_port_add_touch(&touch_cfg);
-    if (my_touch_indev == NULL)
-    {
-        err = ESP_FAIL;
-        DISPLAY_ERROR("LVGL touch port add fail");
-    }
-    return err;
-}
-
 esp_err_t display_init()  // Display initialization function
 {
     esp_err_t err = ESP_OK;
@@ -240,12 +146,6 @@ esp_err_t display_init()  // Display initialization function
     err = display_port_init(); /* Display screen interface initialization function */
     if (err != ESP_OK)
         return err;
-    err = lvgl_init(); /* Screen interface registration LVGL function */
-    if (err != ESP_OK)
-    {
-        ILLUMINATE_ERROR("Display init fail");
-        return err;
-    }
     set_lcd_blight(0);  /* Set backlight to off */
     return err;
 }

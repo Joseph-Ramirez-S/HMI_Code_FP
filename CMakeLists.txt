@@ -10,32 +10,18 @@ set(EXTRA_COMPONENT_DIRS "peripheral")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(HMI_Code_FP)
 
-# Empaquetamos los fondos, animaciones y elementos laterales del renderizador.
-set(SPIFFS_ASSETS_DIR "${CMAKE_BINARY_DIR}/spiffs_assets")
-file(MAKE_DIRECTORY "${SPIFFS_ASSETS_DIR}")
-foreach(asset roomde.png neko_strip6.png elevator_door_strip8.png Level_indicator.png elevator_inside.png Panel_pixelado.png botones_ascensor.png luces_ascensor.png)
-    configure_file(
-        "${CMAKE_CURRENT_LIST_DIR}/../Bridge/assets/${asset}"
-        "${SPIFFS_ASSETS_DIR}/${asset}"
-        COPYONLY
-    )
-endforeach()
-# SPIFFS has a short filename limit; store this door sheet under an alias.
-configure_file(
-    "${CMAKE_CURRENT_LIST_DIR}/../Bridge/assets/elevator door2_strip8.png"
-    "${SPIFFS_ASSETS_DIR}/inside_door.png"
-    COPYONLY
-)
-# SPIFFS has a short filename limit; store this sprite sheet under an alias.
-configure_file(
-    "${CMAKE_CURRENT_LIST_DIR}/../Bridge/assets/agente_sombra_periodico_sprites.png"
-    "${SPIFFS_ASSETS_DIR}/agente.png"
-    COPYONLY
-)
-# La hoja original es demasiado grande para decodificarla como RGBA en PSRAM.
-configure_file(
-    "${CMAKE_CURRENT_LIST_DIR}/../Bridge/assets/la_que_atiende_strip4_esp32.png"
-    "${SPIFFS_ASSETS_DIR}/la_que_atiende_strip4.png"
-    COPYONLY
-)
-spiffs_create_partition_image(storage "${SPIFFS_ASSETS_DIR}" FLASH_IN_PROJECT)
+# RGB565 is read directly from this flash partition by the Bridge.
+set(graphics_pack "${CMAKE_CURRENT_LIST_DIR}/../Bridge/assets/graphics.bin")
+configure_file("${graphics_pack}" "${CMAKE_BINARY_DIR}/graphics.bin" COPYONLY)
+partition_table_get_partition_info(graphics_capacity "--partition-name graphics" "size")
+file(SIZE "${graphics_pack}" graphics_size)
+math(EXPR graphics_capacity "${graphics_capacity}")
+if(graphics_size GREATER graphics_capacity)
+    message(FATAL_ERROR "graphics.bin exceeds the graphics partition")
+endif()
+
+idf_component_get_property(main_args esptool_py FLASH_ARGS)
+idf_component_get_property(sub_args esptool_py FLASH_SUB_ARGS)
+esptool_py_flash_target(storage-flash "${main_args}" "${sub_args}")
+esptool_py_flash_to_partition(storage-flash graphics "${CMAKE_BINARY_DIR}/graphics.bin")
+esptool_py_flash_to_partition(flash graphics "${CMAKE_BINARY_DIR}/graphics.bin")

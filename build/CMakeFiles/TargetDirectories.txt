@@ -20,7 +20,6 @@ E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_
 E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/CMakeFiles/uf2.dir
 E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/CMakeFiles/uf2-app.dir
 E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/CMakeFiles/__ldgen_output_sections.ld.dir
-E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/CMakeFiles/spiffs_storage_bin.dir
 E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/CMakeFiles/storage-flash.dir
 E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/CMakeFiles/encrypted-storage-flash.dir
 E:/Tareas_realizadas_cuatrimestre_SEPT-DIC-2025/Controlles_II/Final_Proyect/HMI_Code_FP/build/CMakeFiles/edit_cache.dir
