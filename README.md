@@ -38,58 +38,71 @@ Las salidas comienzan en `LOW` y se activan en `HIGH`. El firmware mantiene una 
 
 ## Interactividad exterior
 
-| Control | Comportamiento |
-| --- | --- |
-| **Escalera** · esquina superior izquierda | Abre con un fundido el selector **Level 3**, **Level 2** y **Level 1**. Cada botón usa el color de su escenario y un círculo amarillo marca el vestíbulo actual. Seleccionar otro piso cambia el vestíbulo en pantalla. La flecha de regreso o el nivel actual cierran el selector. La navegación por escalera deja la posición física del ascensor bajo el control del PLC. |
-| **Puerta del ascensor** | Si la cabina está en el mismo piso, la puerta se abre y la vista pasa al interior. Si está en otro piso, el toque solicita la cabina al nivel del vestíbulo y reproduce un aviso. La apertura espera la confirmación de ese piso. |
-| **Indicadores exteriores** | Muestran el piso confirmado y el sentido de marcha. El rombo verde indica reposo y parpadea durante la espera de una llamada remota con `TIMER.DOOR`. Al arrancar aparecen las indicaciones de subida o bajada. |
-| **Flecha de ayuda** | Tras 8 segundos sin interacción, una flecha verde en pixel art apunta a la puerta y rebota en bucle hasta el siguiente toque. Suena un aviso cuando aparece. |
-| **Engranaje** · esquina superior derecha | Abre **SETTINGS** con una animación de despliegue. Las barras dan un aviso sonoro cuando cambia un valor. |
-| **Bocina** · esquina inferior derecha | Silencia efectos y música a la vez. **SETTINGS** refleja ambos volúmenes en cero. Al desactivar el silencio se recuperan los niveles configurados. |
+![Vestíbulo del nivel 1 con la escalera, el engranaje, la bocina y la flecha que apunta al ascensor](docs/capturas/vestibulo.png)
 
-### SETTINGS
-
-| Opción | Rango | Comportamiento |
+| Captura | Control | Qué hace |
 | --- | --- | --- |
-| `VFX` | 0–10 | Volumen de los efectos de sonido. 0 silencia y 10 aplica el nivel máximo. |
-| `MUSIC` | 0–10 | Volumen de la música de fondo. 0 silencia y 10 aplica el nivel máximo. |
-| `TIMER.DOOR` | 1–10 s | La casilla habilita la espera antes de solicitar un viaje. En el exterior solo se aplica si la cabina está en otro piso. En el interior se aplica a las salidas y a las siguientes paradas de la cola. |
-| `STACK.MODE` | 1–5 solicitudes | La casilla habilita una cola con capacidad ajustable. Las solicitudes se atienden en el orden en que se ingresaron. |
+| <img src="docs/capturas/icono-escalera.png" width="76" alt="Escalera de madera en pixel art"> | **Escalera** | En la esquina superior izquierda. Al tocarla, la pantalla se oscurece y aparece el [selector de niveles](#selector-de-niveles). Sirve para visitar los pisos en pantalla sin llamar a la cabina. |
+| <img src="docs/capturas/puerta-exterior.png" width="112" alt="Puerta del ascensor vista desde el vestíbulo"> | **Puerta del ascensor** | Si la cabina está en tu piso, toca la puerta para abrirla y entrar. Si está en otro piso, el toque pide que la cabina venga y suena un aviso. La puerta se abre cuando llega a tu piso. |
+| <img src="docs/capturas/indicador-exterior.png" width="150" alt="Número de piso, rombo verde y flechas verdes hacia abajo"> | **Indicadores exteriores** | El número sobre la puerta muestra el piso confirmado de la cabina. El rombo verde indica que está parada. Si está contando el tiempo de `TIMER.DOOR`, el rombo parpadea. Cuando la cabina arranca, las flechas muestran si sube o baja. |
+| <img src="docs/capturas/flecha-ayuda.png" width="88" alt="Flecha verde que apunta a la puerta"> | **Flecha de ayuda** | Si pasan 8 segundos sin tocar la pantalla, suena un aviso y la flecha empieza a rebotar apuntando a la puerta. Desaparece con el siguiente toque. |
+| <img src="docs/capturas/engranaje.png" width="76" alt="Engranaje de configuración en pixel art"> | **Engranaje** | En la esquina superior derecha. Al tocarlo, gira un poco y abre [SETTINGS](#menú-settings). |
+| <img src="docs/capturas/bocina.png" width="148" alt="Bocina con sonido y bocina silenciada con una X roja"> | **Bocina** | En la esquina inferior derecha. Un toque silencia los efectos y la música. Ambas barras muestran 0. Otro toque recupera los volúmenes anteriores. |
+
+### Selector de niveles
+
+<img src="docs/capturas/selector-niveles.png" width="500" alt="Menú Level 3, Level 2 y Level 1, con una flecha de regreso y un círculo amarillo al lado del nivel actual">
+
+Toca **Level 3**, **Level 2** o **Level 1** para ir al pasillo de ese piso. La pantalla se oscurece un momento mientras cambia la vista. El círculo amarillo marca el piso que estás viendo. Toca ese mismo nivel o la flecha amarilla para volver al pasillo donde estabas.
+
+### Menú SETTINGS
+
+<img src="docs/capturas/settings.png" width="565" alt="Menú SETTINGS con las barras VFX y MUSIC y las casillas TIMER.DOOR y STACK.MODE activadas">
+
+El menú baja suavemente al abrirse. Toca la **X** o el engranaje para cerrarlo. Cada vez que cambias el valor de una barra suena un aviso corto.
+
+| Opción | Rango | Qué hace |
+| --- | --- | --- |
+| `VFX` | 0–10 | Ajusta el volumen de los efectos. En 0 quedan en silencio. |
+| `MUSIC` | 0–10 | Ajusta el volumen de la música de fondo. En 0 queda en silencio. |
+| `TIMER.DOOR` | 1–10 s | Marca la casilla para elegir cuántos segundos esperar antes de cada salida de la cabina. Desde el pasillo, solo hay espera cuando pides la cabina desde otro piso. |
+| `STACK.MODE` | 1–5 solicitudes | Marca la casilla para elegir cuántas solicitudes caben en la cola. La cabina atiende los pisos en el orden en que se pidieron. |
 
 ## Interactividad interior
 
-| Control o estado | Comportamiento |
-| --- | --- |
-| **Botones 1, 2 y 3** | Seleccionan el piso. La HMI termina la animación de cierre antes de enviar la solicitud. Con `STACK.MODE` se pueden ingresar varias paradas y el icono de personas muestra la cantidad pendiente. Cada hueco liberado permite incorporar otra solicitud al final de la cola. |
-| **Abrir y Cerrar** | Animan la puerta de la cabina. Si se pulsa **Abrir** antes de completar el cierre para una salida, la puerta se reabre, se cancela la salida con sus solicitudes pendientes y la cabina permanece en el piso. Ambos botones quedan bloqueados durante el viaje y la ralentización de llegada. |
-| **En movimiento** | Se activa el indicador de subida o bajada, se anima el fondo del hueco con cadenas y luminarias y suena el efecto de marcha en bucle. Durante la espera de `TIMER.DOOR` parpadea el cuadro central del indicador interior. |
-| **Llegada al destino** | El final de carrera del piso seleccionado activa el timbre y la ralentización visual. Después se abre la puerta automáticamente cuando el piso está confirmado. Si el contacto se interrumpe brevemente, la HMI conserva la llegada pendiente y reintenta la apertura al confirmar el mismo piso. Un piso intermedio puede aparecer en el indicador durante el viaje, sin activar el timbre de destino. |
-| **Salir** | Tocar el umbral con la puerta abierta regresa al vestíbulo del piso alcanzado mediante un fundido. Al salir se cancelan las solicitudes pendientes de la cabina. |
-| **Emergencia en movimiento** | Envía la solicitud de parada al PLC, anula el destino y vacía la cola. El indicador muestra `ERR`. Al soltar el botón, el primer piso que se seleccione será el nuevo destino. Si `STACK.MODE` está activo, las nuevas solicitudes se agregan en orden detrás de ese destino. |
-| **Emergencia en un piso confirmado** | Mantiene visible el número de piso, cancela el temporizador y las solicitudes de la cola y deja abierta la puerta de la cabina. |
+![Cabina con la puerta y el número de piso al centro, el panel de botones a la derecha y el contador arriba a la izquierda](docs/capturas/cabina.png)
+
+| Captura | Control o estado | Qué hace |
+| --- | --- | --- |
+| <img src="docs/capturas/botones-piso.png" width="110" alt="Botones 3, 2 y 1 del panel interior"> | **Botones 1, 2 y 3** | Toca el piso al que quieres ir. La HMI manda la solicitud cuando la puerta termina de cerrarse en pantalla. |
+| <img src="docs/capturas/contador-stack.png" width="132" alt="Icono de persona con el contador 2 de 5"> | **Contador de `STACK.MODE`** | Indica cuántas solicitudes están pendientes y cuántas caben en total. Por ejemplo, **2/5** significa que hay dos solicitudes de un máximo de cinco. Cuando se libera un lugar, puedes añadir otro piso al final de la cola. |
+| <img src="docs/capturas/botones-puerta.png" width="148" alt="Botón Abrir a la izquierda y botón Cerrar a la derecha"> | **Abrir y Cerrar** | El botón izquierdo abre la puerta en pantalla y el derecho la cierra. Si tocas **Abrir** mientras la puerta se cierra para iniciar un viaje, se vuelve a abrir, se borran las solicitudes pendientes y la cabina se queda en ese piso. Los botones se bloquean durante el viaje y mientras la cabina se detiene al llegar. |
+| <img src="docs/capturas/indicador-interior.png" width="148" alt="Número de piso y flechas rojas que indican que la cabina sube"> | **Indicador interior** | Muestra el número de piso y si la cabina sube o baja. Mientras viajas, las cadenas y las luces del fondo se mueven y suena el efecto de marcha. El cuadro central parpadea durante la cuenta de `TIMER.DOOR`. |
+| <img src="docs/capturas/puerta-cabina.png" width="148" alt="Puerta de la cabina abierta al llegar al nivel 2"> | **Llegar y salir** | El timbre suena al llegar al piso pedido. El movimiento en pantalla se hace más lento y la puerta se abre sola cuando el sensor confirma el piso. Si se pierde la señal un momento, espera a que vuelva. Por ejemplo, del 1 al 3 el timbre suena solo al llegar al 3. Toca la puerta abierta para volver al pasillo de ese piso. La pantalla se oscurece un momento y se borran las solicitudes pendientes. |
+| <img src="docs/capturas/emergencia.png" width="152" alt="Botón de emergencia presionado y pantalla interior que muestra ERR"> | **Emergencia** | **Si la cabina está viajando**, pide al PLC que la detenga, borra las solicitudes y muestra `ERR`. Al soltar el botón, puedes escoger otro piso. Con `STACK.MODE`, puedes añadir más pisos a esa nueva lista. **Si ya está parada en un piso confirmado**, cancela la espera y la cola, deja la puerta abierta y sigue mostrando el número del piso. |
 
 ## Integración con el PLC
 
-1. **HMI → PLC.** La HMI señala una solicitud de piso por `GPIO_OUT_LEVEL_1` a `GPIO_OUT_LEVEL_3` o una solicitud de parada por `GPIO_OUT_EMERGENCY`.
-2. **PLC → HMI.** El PLC controla el ascensor real y proporciona la confirmación de piso mediante `GPIO_IN_LEVEL_1` a `GPIO_IN_LEVEL_3`. La HMI usa esa confirmación para actualizar los indicadores, reproducir la llegada y abrir la puerta en pantalla.
-3. **Temporizador y cola.** `TIMER.DOOR` y `STACK.MODE` programan cuándo y en qué orden la HMI envía solicitudes. Para ofrecer el mismo comportamiento con el ascensor real, la programación del PLC debe coordinarse con la HMI. Las señales descritas comunican pisos y emergencia. Si el PLC también implementa temporización o cola, ambos programas deben acordar dónde se aplica cada espera y cómo se aceptan, completan o cancelan las solicitudes.
+1. **De la pantalla al PLC.** Cuando pides un piso, la HMI activa la salida de ese piso que aparece en la tabla de GPIO. El botón de Emergencia usa `GPIO_OUT_EMERGENCY` para pedir una parada.
+2. **Del PLC a la pantalla.** El PLC controla el ascensor real. Cuando confirma un piso por la entrada correspondiente, la HMI actualiza los indicadores. Si la cabina llega al piso pedido, suena el timbre y se abre la puerta en pantalla.
+3. **Esperas y pedidos en orden.** `TIMER.DOOR` y `STACK.MODE` organizan cuándo y en qué orden la HMI envía los pedidos. Si el PLC también tiene un temporizador o una cola, hay que coordinar ambos programas para que, por ejemplo, una misma espera se cuente una sola vez.
 
 ## Compilación y recursos
 
-- [`main/`](main/) contiene la lógica de hardware, lectura táctil, GPIO, gráficos y audio. [`peripheral/`](peripheral/) contiene los componentes de la placa.
-- `Bridge/` contiene el motor compartido y el paquete RGB565 `assets/graphics.bin`, que se graba en la partición `graphics` definida en [`partitions.csv`](partitions.csv). `SDL2_port_game/` contiene el simulador de escritorio. Ambos directorios están al lado de `HMI_Code_FP/` en el espacio de trabajo original.
-- Para compilar una copia de este repositorio, coloca `Bridge/` y su paquete gráfico al lado de `HMI_Code_FP/`. Con ESP-IDF 5.5 activado y desde `HMI_Code_FP/`, ejecuta:
+- En [`main/`](main/) está el código que conecta la pantalla táctil, los pines, los gráficos y el sonido. En [`peripheral/`](peripheral/) están los componentes de la placa.
+- `Bridge/` guarda el código que comparten la HMI y el simulador `SDL2_port_game/`. También incluye `assets/graphics.bin`, el archivo de imágenes que se copia a la partición `graphics` de la placa durante la instalación. La partición se define en [`partitions.csv`](partitions.csv).
+- Para compilar esta copia, coloca la carpeta `Bridge/` al lado de `HMI_Code_FP/`. Abre una terminal con ESP-IDF 5.5 activado y ejecuta estos comandos desde `HMI_Code_FP/`.
 
   ```sh
   idf.py build
   idf.py flash monitor
   ```
 
-  Si hay más de un puerto serie, indica el del CrowPanel a `idf.py` mediante `-p`.
+  Si hay varios puertos serie, usa `idf.py -p PUERTO flash monitor` y reemplaza `PUERTO` por el puerto del CrowPanel.
 
 ### Audio en microSD
 
-La tarjeta se monta por SDMMC en `/sdcard`. Coloca los audios en la raíz de una microSD con FAT32. Los efectos usan WAV PCM de 16 bits a 48 kHz, mono o estéreo. `Background_Sound.mp3` se lee por bloques y se reproduce en bucle después de la intro.
+Guarda los archivos directamente en una microSD con formato FAT32. La placa lee la tarjeta por SDMMC y los encuentra en `/sdcard`. Los efectos usan WAV PCM de 16 bits a 48 kHz, mono o estéreo. La música empieza al terminar la introducción y vuelve a empezar cuando llega al final. La placa la lee por partes mientras suena.
 
 | Archivo | Uso |
 | --- | --- |
@@ -97,10 +110,10 @@ La tarjeta se monta por SDMMC en `/sdcard`. Coloca los audios en la raíz de una
 | `BUTTONS.WAV` | Pulsaciones de los controles de la interfaz. |
 | `ARRIVAL.WAV` | Timbre de llegada. |
 | `S1_BF.WAV` | Aviso de la flecha de ayuda. |
-| `SCENE.WAV` | Efecto del fundido entre escenarios. |
+| `SCENE.WAV` | Sonido que acompaña el breve oscurecimiento al cambiar de pantalla. |
 | `CALL.WAV` | Aviso al solicitar el ascensor desde otro piso. |
 | `ALERT.WAV` | Aviso del botón de emergencia. |
-| `MOTION.WAV` | Bucle de movimiento y desaceleración de la cabina. |
+| `MOTION.WAV` | Sonido que se repite mientras la cabina se mueve y baja de volumen cuando se detiene. |
 | `BACK.WAV` | Regreso desde el selector de la escalera. |
 | `OPTIONS.WAV` | Apertura de **SETTINGS**. |
 | `SLIDER.WAV` | Cambios de valor en las barras de **SETTINGS**. |
