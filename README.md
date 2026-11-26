@@ -87,22 +87,34 @@ El menú baja suavemente al abrirse. Toca la **X** o el engranaje para cerrarlo.
 2. **Del PLC a la pantalla.** El PLC controla el ascensor real. Cuando confirma un piso por la entrada correspondiente, la HMI actualiza los indicadores. Si la cabina llega al piso pedido, suena el timbre y se abre la puerta en pantalla.
 3. **Esperas y pedidos en orden.** `TIMER.DOOR` y `STACK.MODE` organizan cuándo y en qué orden la HMI envía los pedidos. Si el PLC también tiene un temporizador o una cola, hay que coordinar ambos programas para que, por ejemplo, una misma espera se cuente una sola vez.
 
-## Compilación y recursos
+## Clonar y compilar
 
-- En [`main/`](main/) está el código que conecta la pantalla táctil, los pines, los gráficos y el sonido. En [`peripheral/`](peripheral/) están los componentes de la placa.
-- `Bridge/` guarda el código que comparten la HMI y el simulador `SDL2_port_game/`. También incluye `assets/graphics.bin`, el archivo de imágenes que se copia a la partición `graphics` de la placa durante la instalación. La partición se define en [`partitions.csv`](partitions.csv).
-- Para compilar esta copia, coloca la carpeta `Bridge/` al lado de `HMI_Code_FP/`. Abre una terminal con ESP-IDF 5.5 activado y ejecuta estos comandos desde `HMI_Code_FP/`.
+El repositorio incluye [`main/`](main/) y [`peripheral/`](peripheral/) para el CrowPanel, el código compartido en [`Bridge/`](Bridge/), el paquete de gráficos en [`Bridge/assets/graphics.bin`](Bridge/assets/graphics.bin) y los efectos de prueba en [`sdcard/`](sdcard/). El mismo paquete de gráficos sirve para el firmware y el simulador. Para compilar el firmware necesitas Git y **ESP-IDF 5.5.4** con las herramientas del ESP32-P4 instaladas. [Guía de instalación de Espressif](https://docs.espressif.com/projects/esp-idf/en/v5.5.4/esp32p4/get-started/index.html)
 
-  ```sh
-  idf.py build
-  idf.py flash monitor
-  ```
+```sh
+git clone --depth 1 https://github.com/Joseph-Ramirez-S/HMI_Code_FP.git
+cd HMI_Code_FP
+idf.py build
+```
 
-  Si hay varios puertos serie, usa `idf.py -p PUERTO flash monitor` y reemplaza `PUERTO` por el puerto del CrowPanel.
+Para instalarlo en el CrowPanel, conecta el cable USB y ejecuta `idf.py -p PUERTO flash monitor`. Sustituye `PUERTO` por el puerto de tu placa, por ejemplo `COM11` en Windows. El comando graba el firmware y las imágenes en la partición `graphics` definida en [`partitions.csv`](partitions.csv).
+
+### Probar en PC con SDL2
+
+[`SDL2_port_game/`](SDL2_port_game/) contiene el simulador de escritorio. Para compilarlo, instala CMake, un compilador de C y C++ y el paquete de desarrollo de **SDL2** correspondiente a ese compilador. [Proyecto SDL2](https://github.com/libsdl-org/SDL/tree/SDL2)
+
+```sh
+cmake -S SDL2_port_game -B build-sdl2
+cmake --build build-sdl2
+```
+
+Ejecuta `hmi_sdl2` desde la carpeta `build-sdl2/` o desde su subcarpeta `Debug/` o `Release/`, según el generador de CMake. La compilación coloca las imágenes y los efectos junto al programa. Si CMake no encuentra SDL2, añade `-DSDL2_DIR=RUTA` al primer comando y usa la carpeta que contiene `SDL2Config.cmake` o `sdl2-config.cmake`. El ratón sustituye a la pantalla táctil. Las teclas **1**, **2** y **3** simulan los sensores de piso y **0** simula que ninguno está activo.
 
 ### Audio en microSD
 
-Guarda los archivos directamente en una microSD con formato FAT32. La placa lee la tarjeta por SDMMC y los encuentra en `/sdcard`. Los efectos usan WAV PCM de 16 bits a 48 kHz, mono o estéreo. La música empieza al terminar la introducción y vuelve a empezar cuando llega al final. La placa la lee por partes mientras suena.
+Copia el contenido de [`sdcard/`](sdcard/) directamente en una microSD con formato FAT32. La placa lee la tarjeta por SDMMC y los encuentra en `/sdcard`. Los efectos incluidos son sonidos originales de prueba en WAV PCM de 16 bits a 48 kHz. Puedes sustituirlos por tus propios efectos con los mismos nombres y el mismo formato.
+
+La música de fondo es opcional. Para activarla, añade un MP3 que puedas usar bajo el nombre `Background_Sound.mp3` en la raíz de la microSD. En el simulador, colócalo en la carpeta `sdcard/` que está junto al ejecutable. La música empieza después de la introducción y vuelve a empezar cuando termina.
 
 | Archivo | Uso |
 | --- | --- |

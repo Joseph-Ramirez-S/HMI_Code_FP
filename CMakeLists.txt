@@ -11,7 +11,7 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(HMI_Code_FP)
 
 # RGB565 is read directly from this flash partition by the Bridge.
-set(graphics_pack "${CMAKE_CURRENT_LIST_DIR}/../Bridge/assets/graphics.bin")
+set(graphics_pack "${CMAKE_CURRENT_LIST_DIR}/Bridge/assets/graphics.bin")
 configure_file("${graphics_pack}" "${CMAKE_BINARY_DIR}/graphics.bin" COPYONLY)
 partition_table_get_partition_info(graphics_capacity "--partition-name graphics" "size")
 file(SIZE "${graphics_pack}" graphics_size)
