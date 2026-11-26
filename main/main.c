@@ -3,8 +3,11 @@
 #include "esp_lcd_panel_ops.h" 
 #include "esp_heap_caps.h"     
 #include "esp_partition.h"
+#include "esp_system.h"
 #include "engine_bridge.h"
 #include "panel_graphics.h"
+#include "intro_audio.h"
+#include "audio_sd.h"
 #include "driver/gpio.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -111,32 +114,52 @@ static esp_err_t elevator_gpio_init(void) {
 }
 
 static void update_elevator_gpio_outputs(void) {
-    const int pressed_button = bridge_get_pressed_elevator_button();
+    const int pressed_button = bridge_get_elevator_output_button();
     const gpio_num_t output_pins[] = {
         GPIO_OUT_LEVEL_1, GPIO_OUT_LEVEL_2,
         GPIO_OUT_LEVEL_3, GPIO_OUT_EMERGENCY
     };
-    const int button_indices[] = {0, 1, 2, 5};
+    const int button_indices[] = {0, 1, 2, BRIDGE_ELEVATOR_EMERGENCY_BUTTON};
+    gpio_num_t selected_pin = GPIO_NUM_NC;
+    bool other_outputs_low = true;
     for (size_t i = 0; i < sizeof(output_pins) / sizeof(output_pins[0]); ++i) {
-        const esp_err_t err = gpio_set_level(
-            output_pins[i], pressed_button == button_indices[i] ? 1 : 0);
+        if (pressed_button == button_indices[i]) {
+            selected_pin = output_pins[i];
+            continue;
+        }
+        const esp_err_t err = gpio_set_level(output_pins[i], 0);
         if (err != ESP_OK) {
-            MAIN_ERROR("No se pudo actualizar GPIO%d: %s",
-                       output_pins[i], esp_err_to_name(err));
+            MAIN_ERROR("No se pudo bajar GPIO%d: %s", output_pins[i], esp_err_to_name(err));
+            other_outputs_low = false;
+        }
+    }
+    if (other_outputs_low && selected_pin != GPIO_NUM_NC) {
+        const esp_err_t err = gpio_set_level(selected_pin, 1);
+        if (err != ESP_OK) {
+            MAIN_ERROR("No se pudo activar GPIO%d: %s", selected_pin, esp_err_to_name(err));
         }
     }
 }
 
-static void update_elevator_gpio_inputs(void) {
-    int level = 0;
-    if (gpio_get_level(GPIO_IN_LEVEL_1)) {
-        level = 1;
-    } else if (gpio_get_level(GPIO_IN_LEVEL_2)) {
-        level = 2;
-    } else if (gpio_get_level(GPIO_IN_LEVEL_3)) {
-        level = 3;
+static int update_elevator_gpio_inputs(void) {
+    static int candidate = -2, stable = -2;
+    static unsigned samples;
+    const unsigned contacts = (gpio_get_level(GPIO_IN_LEVEL_1) != 0) |
+        ((gpio_get_level(GPIO_IN_LEVEL_2) != 0) << 1) |
+        ((gpio_get_level(GPIO_IN_LEVEL_3) != 0) << 2);
+    const int level = contacts == 1 ? 1 : contacts == 2 ? 2 : contacts == 4 ? 3 : contacts == 0 ? 0 : -1;
+    if (candidate != level) {
+        candidate = level;
+        samples = 0;
     }
-    bridge_set_elevator_level(level);
+    if (samples < 3 && ++samples == 3 && stable != candidate) {
+        stable = candidate;
+        // A brief or ambiguous contact must not dispatch the next queued trip.
+        const bool play_arrival = bridge_set_elevator_level(stable > 0 ? stable : 0);
+        if (play_arrival && atomic_load_explicit(&intro_complete, memory_order_acquire))
+            arrival_audio_request();
+    }
+    return samples == 3 ? stable : -1;
 }
 
 // Display initialization and submission run on the same core as the DSI DMA ISR.
@@ -178,8 +201,6 @@ static void animation_game_task(void *pvParameters) {
     if (err != ESP_OK) init_fail_handler("refresco DPI", err);
     err = panel_graphics_init();
     if (err != ESP_OK) MAIN_ERROR("Aceleracion DMA2D no disponible: %s; usando CPU", esp_err_to_name(err));
-    err = set_lcd_blight(100);
-    if (err != ESP_OK) init_fail_handler("LCD Backlight", err);
     void *framebuffers[2] = { NULL, NULL };
     err = esp_lcd_dpi_panel_get_frame_buffer(
         panel_handle, 2, &framebuffers[0], &framebuffers[1]);
@@ -190,20 +211,26 @@ static void animation_game_task(void *pvParameters) {
         return;
     }
 
+    err = intro_audio_prepare();
+    if (err != ESP_OK) MAIN_INFO("Audio microSD no disponible: %s", esp_err_to_name(err));
+    err = set_lcd_blight(100);
+    if (err != ESP_OK) init_fail_handler("LCD Backlight", err);
+
     uint8_t back_buffer_index = 1;
     uint32_t last_refresh = lcd_refreshes();
     unsigned opening_frames = 0;
     int64_t opening_start_us = 0;
     int displayed_intro_frame = -1;
-    const int64_t intro_start_us = esp_timer_get_time();
+    int64_t intro_start_us = 0;
     for (;;) {
         wait_for_refresh(&last_refresh);
-        const int64_t elapsed_us = esp_timer_get_time() - intro_start_us;
+        const int64_t elapsed_us = intro_start_us ? esp_timer_get_time() - intro_start_us : 0;
         const uint32_t elapsed_ms = (uint32_t)(elapsed_us / 1000);
         const int frame_index = bridge_intro_frame_at(elapsed_ms);
         const bool opening = elapsed_ms >= BRIDGE_INTRO_OPEN_MS;
         const bool finished = elapsed_ms >= BRIDGE_INTRO_END_MS;
         if (opening || frame_index != displayed_intro_frame) {
+            const bool first_frame = displayed_intro_frame < 0;
             uint16_t *framebuffer = (uint16_t *)framebuffers[back_buffer_index];
             if (!bridge_render_intro(framebuffer, elapsed_ms)) {
                 MAIN_ERROR("No se pudo componer la introduccion");
@@ -218,6 +245,10 @@ static void animation_game_task(void *pvParameters) {
                            esp_err_to_name(err));
                 vTaskDelete(NULL);
                 return;
+            }
+            if (first_frame) {
+                intro_start_us = esp_timer_get_time();
+                intro_audio_start();
             }
             // Wait for a boundary strictly after publishing the new buffer
             // before writing to the buffer the DMA was previously scanning.
@@ -237,6 +268,8 @@ static void animation_game_task(void *pvParameters) {
     MAIN_INFO("Apertura de introduccion: %u cuadros en %u ms",
               opening_frames, (unsigned)(opening_us / 1000));
     panel_graphics_finish_intro();
+    err = audio_sd_start_upload_service();
+    if (err != ESP_OK) MAIN_ERROR("Transferencia de audio no disponible: %s", esp_err_to_name(err));
     MAIN_INFO("PSRAM al terminar la introduccion: libre %u bytes, minimo desde el arranque %u bytes",
               (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
               (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
@@ -359,12 +392,24 @@ static void system_init(void) {
 void app_main(void)
 {
     MAIN_INFO("Iniciando Arquitectura Unificada (Bridge PC-ESP32)...");
+    MAIN_INFO("Motivo de reinicio: %d", (int)esp_reset_reason());
     system_init();
     bridge_init();
+    bridge_set_button_sound_callback(button_audio_request, NULL);
+    bridge_set_door_sound_callback(door_audio_request, NULL);
+    bridge_set_hint_sound_callback(hint_audio_request, NULL);
+    bridge_set_scene_sound_callback(scene_audio_request, NULL);
+    bridge_set_hall_call_sound_callback(hall_call_audio_request, NULL);
+    bridge_set_emergency_sound_callback(emergency_audio_request, NULL);
+    bridge_set_cabin_motion_sound_callback(cabin_motion_audio_set, NULL);
+    bridge_set_stairs_back_sound_callback(stairs_back_audio_request, NULL);
+    bridge_set_options_sound_callbacks(options_open_audio_request, mute_click_audio_request, NULL);
+    bridge_set_slider_sound_callback(slider_audio_request, NULL);
     esp_err_t err = map_graphics();
     if (err != ESP_OK) init_fail_handler("particion graphics (RGB565)", err);
-    bridge_set_elevator_level(0);
+    update_elevator_gpio_inputs();
     bridge_set_elevator_indicator_test_mode(false);
+    bridge_set_exterior_calls_enabled(true);
 
     if (xTaskCreatePinnedToCore(animation_game_task, "Animacion_DSI",
                                 ANIMATION_TASK_STACK_SIZE, NULL, 5, NULL, 1) != pdPASS) {
@@ -372,42 +417,47 @@ void app_main(void)
     }
 
     bool touch_was_pressed = false;
+    uint16_t last_touch_x = 0, last_touch_y = 0;
     uint8_t touch_release_samples = 0;
     TickType_t input_last_wake = xTaskGetTickCount();
     uint32_t input_tick_remainder = 0;
     for (;;) {
         wait_for_input_poll(&input_last_wake, &input_tick_remainder);
+        const int confirmed_floor = update_elevator_gpio_inputs();
         if (!atomic_load_explicit(&intro_complete, memory_order_acquire)) {
             continue;
         }
-        update_elevator_gpio_inputs();
-        update_elevator_gpio_outputs();
-        if (touch_available) {
-            if (touch_read() != ESP_OK) {
-                continue;
-            }
 
-            uint16_t touch_x = 0xffff;
-            uint16_t touch_y = 0xffff;
-            bool touch_pressed = false;
+        uint16_t touch_x = 0xffff;
+        uint16_t touch_y = 0xffff;
+        bool touch_pressed = false;
+        if (touch_available && touch_read() == ESP_OK) {
             get_coor(&touch_x, &touch_y, &touch_pressed);
             if (touch_pressed) {
                 touch_release_samples = 0;
-                bridge_touch_elevator_panel(
-                    touch_x, touch_y, true, H_size, V_size);
-                if (!touch_was_pressed) {
-                    bridge_touch_elevator_door(
-                        touch_x, touch_y, H_size, V_size);
+                last_touch_x = touch_x;
+                last_touch_y = touch_y;
+                if (!bridge_touch_options(touch_x, touch_y, true, H_size, V_size)) {
+                    const bool stairs = bridge_touch_stairs(touch_x, touch_y, true, H_size, V_size);
+                    bridge_touch_elevator_panel(touch_x, touch_y, true, H_size, V_size, confirmed_floor);
+                    if (!touch_was_pressed && !stairs)
+                        bridge_touch_elevator_door(touch_x, touch_y, H_size, V_size);
                 }
                 touch_was_pressed = true;
-            } else if (touch_was_pressed) {
-                if (++touch_release_samples >= 2) {
-                    bridge_touch_elevator_panel(
-                        touch_x, touch_y, false, H_size, V_size);
-                    touch_was_pressed = false;
-                    touch_release_samples = 0;
-                }
+            } else if (touch_was_pressed && ++touch_release_samples >= 2) {
+                // The GT911 can have no new report for one poll during a hold.
+                bridge_touch_options(last_touch_x, last_touch_y, false, H_size, V_size);
+                bridge_touch_stairs(last_touch_x, last_touch_y, false, H_size, V_size);
+                bridge_touch_elevator_panel(0, 0, false, H_size, V_size, confirmed_floor);
+                bridge_release_exterior_call();
+                touch_was_pressed = false;
+                touch_release_samples = 0;
             }
+        } else {
+            bridge_touch_elevator_panel(0, 0, false, H_size, V_size, confirmed_floor);
+            bridge_release_exterior_call();
         }
+        bridge_update_elevator_controls_at((uint64_t)esp_timer_get_time(), confirmed_floor);
+        update_elevator_gpio_outputs();
     }
 }

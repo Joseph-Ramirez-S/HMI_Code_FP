@@ -1,6 +1,7 @@
 #include "panel_graphics.h"
 #include "engine_bridge.h"
 #include "esp_async_fbcpy.h"
+#include "driver/ppa.h"
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -8,23 +9,31 @@
 #include "freertos/semphr.h"
 #include <string.h>
 
-enum { W = BRIDGE_PANEL_WIDTH, H = BRIDGE_PANEL_HEIGHT, FRAME_BYTES = W * H * 2, BLACK_PIXELS = 65536 };
+enum { W = BRIDGE_PANEL_WIDTH, H = BRIDGE_PANEL_HEIGHT, FRAME_BYTES = W * H * 2, ZOOM_W = W / 2, ZOOM_H = H / 2, BLACK_PIXELS = 65536 };
 static const unsigned dma_caps = MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
 static esp_async_fbcpy_handle_t dma;
+static ppa_client_handle_t scaler;
+static ppa_client_handle_t black_filler;
 static StaticSemaphore_t done_storage;
 static SemaphoreHandle_t done;
+static StaticSemaphore_t scale_done_storage;
+static SemaphoreHandle_t scale_done;
+static bool scale_pending;
 static BridgePanelGraphics graphics;
 
 // Each cached rectangle contains only the stationary artwork visible during
 // this zoom step. Actors, doors, floor numbers and button states come from the
 // live snapshot. The two endpoints use the original background and pure black.
 typedef struct {
-    BridgeRect area;
     uint16_t *pixels;
+    BridgeRect door;
+    uint16_t *door_poses;
+    bool closed_door;
 } zoom_base_t;
-static zoom_base_t backgrounds[2][BRIDGE_ZOOM_STEPS + 1];
+static zoom_base_t backgrounds[BRIDGE_LOBBY_COUNT][BRIDGE_ZOOM_STEPS + 1];
 static uint16_t source_x[W], source_y[H], red_green[2048], blue[32];
 static uint16_t *black;
+static uint16_t *cabin_zoom;
 static int map_step = -1;
 
 static bool IRAM_ATTR copied(esp_async_fbcpy_handle_t handle, esp_async_fbcpy_event_data_t *event, void *ctx) {
@@ -68,6 +77,19 @@ static bool fill_black(uint16_t *dst, int x, int y, int w, int h) {
     return true;
 }
 
+static bool clear_screen(uint16_t *dst) {
+    if (black_filler) {
+        const ppa_fill_oper_config_t fill = {
+            .out = {.buffer = dst, .buffer_size = FRAME_BYTES, .pic_w = W, .pic_h = H,
+                    .fill_cm = PPA_FILL_COLOR_MODE_RGB565},
+            .fill_block_w = W, .fill_block_h = H,
+            .fill_color_val = 0, .mode = PPA_TRANS_MODE_BLOCKING,
+        };
+        if (ppa_do_fill(black_filler, &fill) == ESP_OK) return true;
+    }
+    return fill_black(dst, 0, 0, W, H);
+}
+
 static void prepare_maps(int step) {
     if (step == map_step) return;
     int zoom, brightness;
@@ -99,67 +121,154 @@ static BridgeRect project(BridgeRect r) {
                               lower_bound_coord(source_y, H, r.y + r.h) - y};
 }
 
-static void shade_rect(uint16_t *dst, int stride, BridgeRect area, const uint16_t *frame) {
-    for (int y = 0; y < area.h; ++y) {
-        const uint16_t *src = frame + source_y[area.y + y] * W;
-        for (int x = 0; x < area.w; ++x) {
-            const uint16_t c = src[source_x[area.x + x]];
-            dst[x] = red_green[c >> 5] | blue[c & 31];
+static void sample_zoom(uint16_t *dst, const uint16_t *snapshot) {
+    for (int y = 0; y < ZOOM_H; ++y) {
+        const uint16_t *row = snapshot + source_y[y * 2] * W;
+        for (int x = 0; x < ZOOM_W; ++x) {
+            const uint16_t color = row[source_x[x * 2]];
+            *dst++ = red_green[color >> 5] | blue[color & 31];
         }
-        dst += stride;
     }
 }
 
-static BridgeRect visible_bounds(const uint16_t *frame) {
-    int left = W, top = H, right = 0, bottom = 0;
-    for (int y = 0; y < H; ++y) {
-        for (int x = 0; x < W; ++x) {
-            if (frame[y * W + x]) {
-                if (x < left) left = x;
-                if (x >= right) right = x + 1;
-                if (y < top) top = y;
-                bottom = y + 1;
+static bool IRAM_ATTR scaled(ppa_client_handle_t handle, ppa_event_data_t *event, void *ctx) {
+    if (!ctx) return false;
+    BaseType_t wake = pdFALSE;
+    xSemaphoreGiveFromISR((SemaphoreHandle_t)ctx, &wake);
+    return wake == pdTRUE;
+}
+
+static bool submit_scale(uint16_t *dst, const uint16_t *src, bool async) {
+    if (!scaler) return false;
+    const ppa_srm_oper_config_t op = {
+        .in = {.buffer = src, .pic_w = ZOOM_W, .pic_h = ZOOM_H, .block_w = ZOOM_W,
+               .block_h = ZOOM_H, .srm_cm = PPA_SRM_COLOR_MODE_RGB565},
+        .out = {.buffer = dst, .buffer_size = FRAME_BYTES, .pic_w = W, .pic_h = H,
+                .srm_cm = PPA_SRM_COLOR_MODE_RGB565},
+        .scale_x = 2.0f, .scale_y = 2.0f,
+        .mode = async ? PPA_TRANS_MODE_NON_BLOCKING : PPA_TRANS_MODE_BLOCKING,
+        .user_data = async ? scale_done : NULL,
+    };
+    return ppa_do_scale_rotate_mirror(scaler, &op) == ESP_OK;
+}
+
+static bool select_zoom_door(zoom_base_t *base, bool closed) {
+    if (!base->door_poses || base->closed_door == closed) return true;
+    const BridgeRect r = base->door;
+    const uint16_t *src = base->door_poses + (closed ? r.w * r.h : 0);
+    uint16_t *dst = base->pixels + r.y * ZOOM_W;
+    for (int y = 0; y < r.h; ++y)
+        memcpy(dst + y * ZOOM_W + r.x, src + y * r.w, r.w * sizeof(*src));
+    if (esp_cache_msync(dst, (size_t)r.h * ZOOM_W * sizeof(*dst),
+                        ESP_CACHE_MSYNC_FLAG_DIR_C2M) != ESP_OK) return false;
+    base->closed_door = closed;
+    return true;
+}
+
+static void start_zoom(uint16_t *dst, int step, int scene, bool closed_door) {
+    zoom_base_t *base = &backgrounds[scene][step];
+    if (base->pixels && select_zoom_door(base, closed_door))
+        scale_pending = submit_scale(dst, base->pixels, true);
+}
+
+static void expand_zoom(uint16_t *dst, const uint16_t *src) {
+    if (scale_pending) {
+        xSemaphoreTake(scale_done, portMAX_DELAY);
+        scale_pending = false;
+        return;
+    }
+    if (submit_scale(dst, src, false)) return;
+    for (int y = 0; y < ZOOM_H; ++y) {
+        uint32_t *top = (uint32_t *)(dst + y * 2 * W);
+        uint32_t *bottom = top + ZOOM_W;
+        for (int x = 0; x < ZOOM_W; ++x) {
+            const uint32_t pixel = *src++;
+            const uint32_t pair = pixel | (pixel << 16);
+            top[x] = pair;
+            bottom[x] = pair;
+        }
+    }
+}
+
+static void shade_lobby_layers(uint16_t *dst, BridgeRect r, const uint16_t *snapshot,
+                               const uint16_t *background) {
+    for (int y = r.y; y < r.y + r.h; ++y) {
+        const int offset = source_y[y] * W;
+        for (int x = r.x; x < r.x + r.w; ++x) {
+            const int sample = offset + source_x[x];
+            const uint16_t color = snapshot[sample];
+            if (color != background[sample]) dst[y * W + x] = red_green[color >> 5] | blue[color & 31];
+        }
+    }
+}
+
+static bool prepare_zoom_doors(int scene) {
+    BridgeRect door;
+    if (!bridge_prepare_closed_lobby_zoom(scene, &door)) return false;
+    for (int step = 1; step < BRIDGE_ZOOM_STEPS; ++step) {
+        zoom_base_t *base = &backgrounds[scene][step];
+        if (!base->pixels) continue;
+        prepare_maps(step);
+        const BridgeRect area = project(door);
+        const int x = (area.x + 1) / 2, y = (area.y + 1) / 2;
+        const BridgeRect r = {x, y, (area.x + area.w + 1) / 2 - x,
+                                  (area.y + area.h + 1) / 2 - y};
+        if (!r.w || !r.h) continue;
+        const size_t cells = (size_t)r.w * r.h;
+        base->door = r;
+        base->door_poses = heap_caps_malloc(cells * 2 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!base->door_poses) return false;
+        for (int row = 0; row < r.h; ++row) {
+            const size_t offset = (size_t)row * r.w;
+            memcpy(base->door_poses + offset, base->pixels + (r.y+row)*ZOOM_W+r.x, r.w * sizeof(uint16_t));
+            const uint16_t *src = graphics.snapshot + source_y[(r.y+row)*2] * W;
+            uint16_t *closed = base->door_poses + cells + offset;
+            for (int col = 0; col < r.w; ++col) {
+                const uint16_t color = src[source_x[(r.x+col)*2]];
+                closed[col] = red_green[color >> 5] | blue[color & 31];
             }
-        }
-    }
-    return right ? (BridgeRect){left, top, right - left, bottom - top} : (BridgeRect){0};
-}
-
-static bool prepare_zoom_bases(void) {
-    for (int i = 0; i < 2; ++i) {
-        if (!bridge_prepare_zoom_scene(i != 0)) return false;
-        BridgeRect bounds = visible_bounds(graphics.snapshot);
-        for (int step = 1; step < BRIDGE_ZOOM_STEPS; ++step) {
-            prepare_maps(step);
-            if (!red_green[2047] && !blue[31]) continue;
-            zoom_base_t *base = &backgrounds[i][step];
-            base->area = project(bounds);
-            if (!base->area.w || !base->area.h) continue;
-            base->pixels = heap_caps_malloc(base->area.w * base->area.h * 2, dma_caps);
-            if (!base->pixels) return false;
-            shade_rect(base->pixels, base->area.w, base->area, graphics.snapshot);
         }
     }
     return true;
 }
 
-static bool zoom_fade(uint16_t *dst, const uint16_t *snapshot, int step, bool inside,
-                      const BridgeRect *layers, int count) {
+static bool prepare_zoom_bases(void) {
+    for (int scene = 0; scene < BRIDGE_LOBBY_COUNT; ++scene) {
+        if (!bridge_prepare_zoom_scene(scene)) return false;
+        for (int step = 1; step < BRIDGE_ZOOM_STEPS; ++step) {
+            prepare_maps(step);
+            if (!red_green[2047] && !blue[31]) continue;
+            zoom_base_t *base = &backgrounds[scene][step];
+            base->pixels = heap_caps_malloc(ZOOM_W * ZOOM_H * sizeof(*base->pixels), dma_caps);
+            if (!base->pixels) return false;
+            sample_zoom(base->pixels, graphics.snapshot);
+        }
+        if (!prepare_zoom_doors(scene)) return false;
+    }
+    return true;
+}
+
+static bool zoom_fade(uint16_t *dst, const uint16_t *snapshot, int step, int scene,
+                      const BridgeRect *layers, int count, bool closed_door) {
     // The endpoints are the ordinary scene (composed by Bridge) and black.
     prepare_maps(step);
-    const zoom_base_t *base = &backgrounds[inside][step];
-    const BridgeRect r = base->area;
-    if (!base->pixels) return fill_black(dst, 0, 0, W, H);
-    // Copy disjoint bands so each destination pixel is written just once.
-    if (!fill_black(dst, 0, 0, W, r.y) ||
-        !fill_black(dst, 0, r.y, r.x, r.h) ||
-        !blit(dst, r.x, r.y, base->pixels, r.w, r.h, 0, 0, r.w, r.h) ||
-        !fill_black(dst, r.x+r.w, r.y, W-r.x-r.w, r.h) ||
-        !fill_black(dst, 0, r.y+r.h, W, H-r.y-r.h)) return false;
-    for (int i = 0; i < count; ++i) {
-        const BridgeRect area = project(layers[i]);
-        if (area.w && area.h) shade_rect(dst + area.y * W + area.x, W, area, snapshot);
+    if (scene == BRIDGE_CABIN) {
+        if (!red_green[2047] && !blue[31]) return clear_screen(dst);
+        if (step <= 0) return copy_columns(dst, 0, snapshot, 0, W);
+        // Shade a quarter of the pixels on the CPU, then use the same
+        // hardware scale as the lobby. Both axes share a uniform transform.
+        sample_zoom(cabin_zoom, snapshot);
+        if (esp_cache_msync(cabin_zoom, ZOOM_W * ZOOM_H * sizeof(*cabin_zoom),
+                            ESP_CACHE_MSYNC_FLAG_DIR_C2M) != ESP_OK) return false;
+        expand_zoom(dst, cabin_zoom);
+        return true;
     }
+    zoom_base_t *base = &backgrounds[scene][step];
+    if (!base->pixels) return clear_screen(dst);
+    if (!select_zoom_door(base, closed_door)) return false;
+    expand_zoom(dst, base->pixels);
+    for (int i = 0; i < count; ++i)
+        shade_lobby_layers(dst, project(layers[i]), snapshot, graphics.lobbies[scene]);
     return true;
 }
 
@@ -168,23 +277,46 @@ esp_err_t panel_graphics_init(void) {
     const esp_async_fbcpy_config_t config = {};
     esp_err_t err = esp_async_fbcpy_install(&config, &dma);
     if (err != ESP_OK) return err;
+    const ppa_client_config_t scale_config = {.oper_type = PPA_OPERATION_SRM};
+    if (ppa_register_client(&scale_config, &scaler) == ESP_OK) {
+        scale_done = xSemaphoreCreateBinaryStatic(&scale_done_storage);
+        const ppa_event_callbacks_t callbacks = {.on_trans_done = scaled};
+        if (ppa_client_register_event_callbacks(scaler, &callbacks) != ESP_OK) {
+            ppa_unregister_client(scaler);
+            scaler = NULL;
+        }
+    }
+    if (!scaler) ESP_LOGW("panel_graphics", "No se pudo iniciar el escalador PPA");
+    const ppa_client_config_t fill_config = {.oper_type = PPA_OPERATION_FILL};
+    if (ppa_register_client(&fill_config, &black_filler) != ESP_OK) black_filler = NULL;
     graphics.copy_columns = copy_columns;
+    graphics.clear_screen = clear_screen;
+    graphics.start_zoom = start_zoom;
     graphics.zoom_fade = zoom_fade;
-    graphics.lobby = heap_caps_malloc(FRAME_BYTES, dma_caps);
+    for (int i = 0; i < BRIDGE_LOBBY_COUNT; ++i)
+        graphics.lobbies[i] = heap_caps_malloc(FRAME_BYTES, dma_caps);
     graphics.cabin = heap_caps_malloc(FRAME_BYTES, dma_caps);
     graphics.snapshot = heap_caps_malloc(FRAME_BYTES, dma_caps);
     graphics.intro_doors = heap_caps_malloc(FRAME_BYTES, dma_caps);
     black = heap_caps_calloc(BLACK_PIXELS, sizeof(*black), dma_caps);
-    if (black && bridge_prepare_panel_graphics(&graphics) && prepare_zoom_bases()) return ESP_OK;
+    cabin_zoom = heap_caps_malloc(ZOOM_W * ZOOM_H * sizeof(*cabin_zoom), dma_caps);
+    if (black && cabin_zoom && bridge_prepare_panel_graphics(&graphics) && prepare_zoom_bases()) return ESP_OK;
     bridge_prepare_panel_graphics(NULL);
-    for (int scene = 0; scene < 2; ++scene)
-        for (int step = 1; step < BRIDGE_ZOOM_STEPS; ++step)
+    for (int scene = 0; scene < BRIDGE_LOBBY_COUNT; ++scene) {
+        for (int step = 1; step < BRIDGE_ZOOM_STEPS; ++step) {
             heap_caps_free(backgrounds[scene][step].pixels);
+            heap_caps_free(backgrounds[scene][step].door_poses);
+            backgrounds[scene][step] = (zoom_base_t){0};
+        }
+    }
     heap_caps_free(black);
+    heap_caps_free(cabin_zoom);
     panel_graphics_finish_intro();
     heap_caps_free(graphics.snapshot);
     heap_caps_free(graphics.cabin);
-    heap_caps_free(graphics.lobby);
+    for (int i = 0; i < BRIDGE_LOBBY_COUNT; ++i) heap_caps_free(graphics.lobbies[i]);
+    if (scaler) ppa_unregister_client(scaler);
+    if (black_filler) ppa_unregister_client(black_filler);
     esp_async_fbcpy_uninstall(dma);
     return ESP_ERR_NO_MEM;
 }
